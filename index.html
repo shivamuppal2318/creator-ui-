@@ -4,13 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Creator OS</title>
+    <script>
+      (function () {
+        try {
+          if (window.sessionStorage.getItem("creator-os-role")) {
+            document.documentElement.classList.add("app-preload");
+          }
+        } catch (error) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/app.css?v=20260730-mobile-site" />
+    <link rel="stylesheet" href="/app.css?v=20260731-jump-fix" />
   </head>
   <body>
     <div class="aurora" aria-hidden="true">
@@ -173,13 +182,20 @@
                   <p class="rail-copy">Average views (bars) vs retention (line)</p>
                 </div>
                 <div class="mini-tabs">
-                  <button type="button" class="active">Hook type</button>
-                  <button type="button">Shooting style</button>
-                  <button type="button">Content pillar</button>
+                  <button type="button" class="active" data-comparison-group="hook">Hook type</button>
+                  <button type="button" data-comparison-group="format">Shooting style</button>
+                  <button type="button" data-comparison-group="pillar">Content pillar</button>
                 </div>
               </div>
               <div class="bars reference-bars" id="hookBars"></div>
               <div class="group-stats-grid" id="groupStats"></div>
+              <div class="hook-reference-block">
+                <div class="hook-reference-copy">
+                  <h3>Hook library</h3>
+                  <p class="rail-copy">Canonical hook definitions based on your taxonomy. Active hook types in the current range are highlighted first.</p>
+                </div>
+                <div class="hook-reference-grid" id="hookReferenceGrid"></div>
+              </div>
             </article>
 
             <article class="panel reference-chart-panel" id="pillarChart">
@@ -687,6 +703,6 @@
         </div>
       </article>
     </div>
-    <script type="module" src="/app.js?v=20260730-mobile-site"></script>
+    <script type="module" src="/app.js?v=20260731-jump-fix"></script>
   </body>
 </html>

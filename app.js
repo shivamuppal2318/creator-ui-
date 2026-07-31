@@ -29,6 +29,7 @@ const state = {
   modalReturnTarget: null,
   modalReturnFocus: null,
   competitorCompareHandle: "",
+  comparisonGroup: "hook",
   newsCategory: "All",
   modalScrollPosition: { x: 0, y: 0 },
   userRole: "",
@@ -41,6 +42,14 @@ const navItems = [
   { id: "news", label: "News Radar", icon: "◎" },
   { id: "admin", label: "Admin", icon: "⋯" },
 ];
+
+const mobileNavLabels = {
+  performance: "Perf",
+  competitors: "Intel",
+  assistant: "AI",
+  news: "News",
+  admin: "Admin",
+};
 
 const viewChrome = {
   performance: {
@@ -75,7 +84,35 @@ const viewChrome = {
   },
 };
 
+const HOOK_REFERENCE = [
+  { label: "Direct Hook", summary: "The video states the value immediately with no buildup.", signals: "Straight to value, no delay, high clarity" },
+  { label: "Question Hook", summary: "The opening asks something that triggers curiosity or self-reflection.", signals: "Who, what, why, how, direct question" },
+  { label: "Curiosity Gap", summary: "The creator withholds the answer to create an information gap.", signals: "Open loop, unresolved claim, wait and see" },
+  { label: "Negative Hook", summary: "Attention comes from pain, risk, loss, or a costly mistake.", signals: "Fear, urgency, warning, problem-first" },
+  { label: "Positive Promise", summary: "The hook promises an attractive outcome right away.", signals: "Benefit first, gain, improvement, upside" },
+  { label: "Story Opening", summary: "The reel starts in the middle of a story or timeline.", signals: "Last night, years ago, yesterday, narrative start" },
+  { label: "Pattern Interrupt", summary: "The opening uses something unexpected to stop the scroll.", signals: "Surprise, silence, absurd move, sharp break" },
+  { label: "Social Proof", summary: "Credibility is built through measurable proof or outcomes.", signals: "Revenue, users, awards, testimonials, numbers" },
+  { label: "Authority Hook", summary: "Trust is built through expertise, credentials, or experience.", signals: "Profession, years, expertise, authority" },
+  { label: "Observation Hook", summary: "The reel starts with an insight people instantly recognize.", signals: "Relatable truth, human behavior, common pattern" },
+  { label: "Myth Busting", summary: "The opening challenges accepted wisdom or popular advice.", signals: "This advice is wrong, common belief challenged" },
+  { label: "Controversial Hook", summary: "The opening intentionally creates disagreement.", signals: "Strong opinion, polarizing stance, conflict" },
+  { label: "News / Announcement", summary: "The hook communicates something new or timely.", signals: "Just launched, big update, announced today" },
+  { label: "Data Hook", summary: "The reel opens with statistics, research, or hard numbers.", signals: "Stats first, research says, number-led claim" },
+  { label: "Identity Hook", summary: "The opening directly calls out a specific audience.", signals: "If you're a founder, every student should watch" },
+  { label: "Command Hook", summary: "The reel opens with a direct instruction.", signals: "Stop, listen, save this, do this now" },
+  { label: "Emotional Hook", summary: "Emotion lands before logic in the opening beat.", signals: "Fear, joy, anger, empathy, shock" },
+  { label: "Aspiration Hook", summary: "The hook points to a desirable future identity or life.", signals: "Future self, dream state, ideal outcome" },
+  { label: "Visual Hook", summary: "The visual itself is the main scroll-stopper.", signals: "Before/after, reveal, extreme visual contrast" },
+  { label: "Shock Hook", summary: "The reel opens with something extreme or emotionally jarring.", signals: "Disbelief, surprise, huge loss, high intensity" },
+  { label: "Demonstration Hook", summary: "The result or process is shown before it is explained.", signals: "Show, don't tell, live demo, in action" },
+  { label: "Transformation Hook", summary: "The opening emphasizes dramatic before-and-after change.", signals: "Visible contrast, improvement, change over time" },
+  { label: "Contrarian Hook", summary: "The creator takes a stance against mainstream advice.", signals: "Opposes common wisdom, unpopular view" },
+  { label: "Speed Hook", summary: "Speed is the main attraction in the opening claim.", signals: "In 30 seconds, in 5 minutes, fast result" },
+];
+
 const $ = (selector) => document.querySelector(selector);
+const isPhoneViewport = () => window.matchMedia("(max-width: 760px), (pointer: coarse) and (max-width: 1100px)").matches;
 const adminTokenStorageKey = "creator-os-admin-token";
 const authRoleStorageKey = "creator-os-role";
 const viewerAccessCode = "123456";
@@ -242,6 +279,7 @@ function queryString() {
   const params = Object.fromEntries(
     Object.entries(state.filters).filter(([, value]) => value !== undefined && value !== null && value !== ""),
   );
+  if (isPhoneViewport()) params.compact = "1";
   return new URLSearchParams(params).toString();
 }
 
@@ -250,13 +288,15 @@ function isAdminUser() {
 }
 
 function renderNav() {
+  const isPhoneNav = isPhoneViewport();
   const visibleNavItems = navItems.filter((item) => item.id !== "admin" || isAdminUser());
   $("#nav").innerHTML = visibleNavItems
     .map(
-      (item) => `<button class="nav-item ${state.activeView === item.id ? "active" : ""}" data-view="${item.id}"><span class="nav-icon">${item.icon}</span><span>${item.label}</span></button>`,
+      (item) =>
+        `<button class="nav-item ${state.activeView === item.id ? "active" : ""}" data-view="${item.id}" data-mobile-label="${escapeHtml(mobileNavLabels[item.id] || item.label)}"><span class="nav-icon">${item.icon}</span><span>${isPhoneNav ? mobileNavLabels[item.id] || item.label : item.label}</span></button>`,
     )
     .join("");
-  document.querySelectorAll("[data-view]").forEach((button) => {
+  document.querySelectorAll("#nav .nav-item[data-view]").forEach((button) => {
     button.onclick = () => {
       openView(button.dataset.view);
     };
@@ -267,6 +307,7 @@ function openView(viewId, options = {}) {
   if (viewId === "admin" && !isAdminUser()) {
     viewId = "performance";
   }
+  const alreadyOnView = state.activeView === viewId;
   const skipPageScroll = Boolean(options.skipPageScroll);
   state.activeView = viewId;
   document.querySelectorAll(".view").forEach((view) => {
@@ -276,7 +317,7 @@ function openView(viewId, options = {}) {
   renderChrome();
   renderNav();
   const content = document.querySelector(".content");
-  if (!skipPageScroll) {
+  if (!skipPageScroll && !alreadyOnView) {
     window.scrollTo({ top: 0, behavior: "smooth" });
     if (content) content.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -372,10 +413,14 @@ function labelize(value) {
 
 function fillExplorerSelect(selector, values, active, fallbackLabel) {
   const normalized = ["all", ...new Set(values.filter(Boolean))];
-  $(selector).innerHTML = normalized
+  const element = $(selector);
+  const nextMarkup = normalized
     .map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value === "all" ? fallbackLabel : labelize(value))}</option>`)
     .join("");
-  $(selector).value = active;
+  if (element.innerHTML !== nextMarkup) {
+    element.innerHTML = nextMarkup;
+  }
+  element.value = normalized.includes(active) ? active : "all";
 }
 
 function postDisplayTitle(post, fallback = "Reel breakdown") {
@@ -390,6 +435,17 @@ function initialsForPost(post) {
     .slice(0, 2)
     .map((token) => token[0]?.toUpperCase() || "")
     .join("") || "RE";
+}
+
+function postThumbnailMarkup(post, className = "post-thumb") {
+  const thumbnailUrl = String(post?.thumbnailUrl || "").trim();
+  const thumbnailSource = post?.id && thumbnailUrl
+    ? `/api/reel-thumbnail?id=${encodeURIComponent(post.id)}&src=${encodeURIComponent(thumbnailUrl)}`
+    : "";
+  return `<span class="${className} post-thumb-media">
+    ${thumbnailSource ? `<img src="${thumbnailSource}" alt="" loading="lazy" onerror="this.hidden=true; this.nextElementSibling.hidden=false;" />` : ""}
+    <span class="post-thumb-fallback"${thumbnailSource ? " hidden" : ""}>${escapeHtml(initialsForPost(post))}</span>
+  </span>`;
 }
 
 function deriveTone(post) {
@@ -440,6 +496,12 @@ function parseCompactNumber(value) {
   if (text.endsWith("M")) return number * 1_000_000;
   if (text.endsWith("K")) return number * 1_000;
   return number;
+}
+
+function missingZeroLabel(value, fallback = "N/A") {
+  const text = String(value ?? "").trim();
+  if (!text || text === "0" || /^0(?:\.0+)?[KML]?$/i.test(text)) return fallback;
+  return text;
 }
 
 function average(values) {
@@ -580,12 +642,13 @@ function normalizeReel(reel = {}) {
     ? reel.scriptSummary.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 8)
     : [];
   const transcript = String(reel.transcript || timestampedTranscript.map((segment) => segment.text).join("\n") || "");
+  const pillar = normalizePillarLabel(reel.pillar, "General");
   return {
     ...reel,
     id: String(reel.id || reel.shortCode || `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: String(reel.title || reel.captionHeadline || reel.caption || "Untitled reel"),
     platform: String(reel.platform || "instagram"),
-    pillar: String(reel.pillar || "General"),
+    pillar,
     hook: String(reel.hook || "Question"),
     format: String(reel.format || "Short video"),
     postedAt: String(reel.postedAt || reel.timestamp || reel.date || new Date().toISOString()),
@@ -618,6 +681,13 @@ function normalizeReel(reel = {}) {
     sourceHandle: String(reel.sourceHandle || ""),
     sourceName: String(reel.sourceName || ""),
   };
+}
+
+function normalizePillarLabel(value, fallback = "General") {
+  const label = String(value || "").trim();
+  if (!label) return fallback;
+  if (/^imported(\s+competitor)?$/i.test(label)) return fallback;
+  return label;
 }
 
 function buildScriptSummary(post) {
@@ -694,10 +764,11 @@ function buildStoryContext(story) {
 }
 
 function competitorHookLabel(competitor) {
+  if (String(competitor?.topHook || "").trim()) return String(competitor.topHook).trim();
   if (/podcast/i.test(competitor.bestFormat)) return "Bold statement";
   if (/skit|character/i.test(competitor.bestFormat)) return "Skit / Question";
   if (/direct|camera/i.test(competitor.bestFormat)) return "Direct take";
-  return "Story hook";
+  return "Question Hook";
 }
 
 function competitorFastestContent(competitor) {
@@ -841,7 +912,7 @@ function competitorReelById(competitor, postId) {
   return normalizeReel({
     ...summary,
     platform: summary.platform || "instagram",
-    pillar: summary.pillar || "Imported",
+    pillar: normalizePillarLabel(summary.pillar, "General"),
     hook: summary.hook || "Question",
     format: summary.format || "Video",
     mediaUrl: summary.mediaUrl || "",
@@ -897,10 +968,20 @@ function nonEmptyLines(lines) {
 
 function meaningfulTags(tags) {
   return tags
-    .map((tag) => String(tag || "").trim())
+    .map((tag) => normalizePillarLabel(tag, ""))
     .filter(Boolean)
     .filter((tag, index, items) => items.indexOf(tag) === index)
-    .filter((tag) => !["Imported", "instagram", "Video", "clips"].includes(tag));
+    .filter((tag) => !["instagram", "Video", "clips"].includes(tag));
+}
+
+function strategyTagClass(tag) {
+  const value = String(tag || "").toLowerCase();
+  if (/education|how-to|framework|storytelling|case study|breakdown|comparison|myth busting|personal brand|documentation|entertainment|inspiration|community building|product led|sales|trend based|reaction|challenge|before|listicle|opinion|authority building|social proof/.test(value)) return "strategy";
+  if (/question|story|observation|bold|curiosity|stat|hook/.test(value)) return "hook";
+  if (/video|talking|cinematic|podcast|b-roll|short/.test(value)) return "format";
+  if (/warm|curious|direct|opinion|structured|tone/.test(value)) return "tone";
+  if (/english|hindi|language/.test(value)) return "language";
+  return "pillar";
 }
 
 function visibleCompetitorStats(competitor, post) {
@@ -974,7 +1055,7 @@ function renderCompetitorDeepDive(data) {
         <strong>${escapeHtml(creator.name)}</strong>
       </div>
       <div class="vs-stat-list">
-        <div><span>Followers</span><strong>${escapeHtml(creator.followersLabel || "N/A")}</strong></div>
+        <div><span>Followers</span><strong>${escapeHtml(missingZeroLabel(creator.followersLabel))}</strong></div>
         <div><span>Posts / week</span><strong>${escapeHtml(creator.postsPerWeekLabel)}</strong></div>
         <div><span>Avg views</span><strong>${escapeHtml(creator.avgViewsLabel)}</strong></div>
         <div><span>Engagement rate</span><strong>${escapeHtml(creator.engagementRateLabel)}</strong></div>
@@ -990,7 +1071,7 @@ function renderCompetitorDeepDive(data) {
         <strong>${escapeHtml(competitor.name)}</strong>
       </div>
       <div class="vs-stat-list">
-        <div><span>Followers</span><strong>${escapeHtml(competitor.followersLabel)}</strong></div>
+        <div><span>Followers</span><strong>${escapeHtml(missingZeroLabel(competitor.followersLabel))}</strong></div>
         <div><span>Posts / week</span><strong>${escapeHtml(competitorPostsPerWeek(competitor))}</strong></div>
         <div><span>Avg views</span><strong>${escapeHtml(competitor.avgViewsLabel || compactNumber(average((competitor.reels || []).map((reel) => reel.views || 0))))}</strong></div>
         <div><span>Engagement rate</span><strong>${escapeHtml(competitor.engagementRateLabel)}</strong></div>
@@ -1020,7 +1101,7 @@ function renderCompetitorDeepDive(data) {
 
   const selectedAvgViews = competitor ? (Number(competitor.avgViews || 0) || average((competitor.reels || []).map((reel) => reel.views || 0))) : 0;
   const radarRows = competitor ? [
-    { label: "Followers", value: competitor.followersLabel, score: (parseCompactNumber(competitor.followersLabel || 0) / maxFollowers) * 100 },
+    { label: "Followers", value: missingZeroLabel(competitor.followersLabel), score: (parseCompactNumber(competitor.followersLabel || 0) / maxFollowers) * 100 },
     { label: "Avg views", value: compactNumber(selectedAvgViews), score: (selectedAvgViews / maxViews) * 100 },
     { label: "Engagement", value: competitor.engagementRateLabel, score: ((Number(competitor.engagementRate || 0) || 0) / maxEngagement) * 100 },
     { label: "Momentum", value: competitor.monthlyGrowthLabel, score: (Math.abs(Number(competitor.monthlyGrowth || 0)) / maxGrowth) * 100 },
@@ -1046,13 +1127,23 @@ function renderCompetitorDeepDive(data) {
   $("#competitorViralPosts").innerHTML = viralPosts.length
     ? viralPosts.map((post) => `
         <article class="viral-row">
+          <div class="viral-row-top">
+            <span class="viral-rank">${escapeHtml(compactNumber(post.views || 0))}</span>
+            <span class="viral-label">Breakout reel</span>
+          </div>
           <div class="viral-copy">
             <strong>${escapeHtml(postDisplayTitle(post))}</strong>
             <p>${escapeHtml(post.competitorName)} • ${escapeHtml(post.postedAtLabel || "")}</p>
+            <div class="viral-tags">
+              <span class="viral-tag">${escapeHtml(post.hook || "Hook")}</span>
+              <span class="viral-tag soft">${escapeHtml(post.format || "Video")}</span>
+              <span class="viral-tag soft">${escapeHtml(normalizePillarLabel(post.pillar, "General"))}</span>
+            </div>
           </div>
           <div class="viral-metrics">
-            <span>${escapeHtml(compactNumber(post.views || 0))} views</span>
-            <span>${escapeHtml(compactNumber(post.likes || 0))} likes</span>
+            <span><strong>${escapeHtml(compactNumber(post.views || 0))}</strong><small>views</small></span>
+            <span><strong>${escapeHtml(compactNumber(post.likes || 0))}</strong><small>likes</small></span>
+            ${post.url ? `<a class="viral-link" href="${escapeHtml(post.url)}" target="_blank" rel="noreferrer">Open reel ↗</a>` : ""}
           </div>
         </article>
       `).join("")
@@ -1062,7 +1153,10 @@ function renderCompetitorDeepDive(data) {
   $("#competitorAdvantageCards").innerHTML = insightSets.advantages.length
     ? insightSets.advantages.map((item) => `
         <article class="competitor-insight-card">
-          <span class="competitor-insight-kicker advantage">${escapeHtml(item.kicker)}</span>
+          <div class="competitor-insight-topline">
+            <span class="competitor-insight-kicker advantage">${escapeHtml(item.kicker)}</span>
+            <span class="competitor-insight-badge">Advantage</span>
+          </div>
           <strong>${escapeHtml(item.title)}</strong>
           <p>${escapeHtml(item.body)}</p>
           <small class="competitor-insight-source">${escapeHtml(item.source)}</small>
@@ -1073,7 +1167,10 @@ function renderCompetitorDeepDive(data) {
   $("#competitorOpportunityCards").innerHTML = insightSets.opportunities.length
     ? insightSets.opportunities.map((item) => `
         <article class="competitor-insight-card">
-          <span class="competitor-insight-kicker opportunity">${escapeHtml(item.kicker)}</span>
+          <div class="competitor-insight-topline">
+            <span class="competitor-insight-kicker opportunity">${escapeHtml(item.kicker)}</span>
+            <span class="competitor-insight-badge opportunity">Opportunity</span>
+          </div>
           <strong>${escapeHtml(item.title)}</strong>
           <p>${escapeHtml(item.body)}</p>
           <small class="competitor-insight-source">${escapeHtml(item.source)}</small>
@@ -1086,7 +1183,6 @@ function renderCompetitorDeepDive(data) {
     state.competitorCompareHandle = compareSelect.value;
     renderCompetitorDeepDive(data);
     restoreScrollSnapshot(scrollSnapshot);
-    requestAnimationFrame(() => openCompetitorModal(state.competitorCompareHandle));
   };
 }
 
@@ -1162,11 +1258,37 @@ function openCompetitorModal(handle) {
 
 window.__openCompetitorModal = openCompetitorModal;
 
-function openCompetitorReelDetail(postId) {
+async function openCompetitorReelDetail(postId) {
   const competitor = (state.dashboard?.competitors || []).find((item) => item.canonicalHandle === state.activeCompetitorHandle);
-  const post = competitorReelById(competitor, postId);
+  let post = competitorReelById(competitor, postId);
   if (!competitor || !post) return;
   state.activeCompetitorPostId = postId;
+
+  const hasLoadedDetails = Boolean(
+    post.transcript ||
+    post.timestampedTranscript?.length ||
+    post.sceneBreakdown?.length ||
+    post.scriptSummary?.length,
+  );
+  if (!hasLoadedDetails) {
+    $("#competitorDetailStatus").textContent = "Loading transcript and reel details...";
+    try {
+      const response = await fetch(`/api/competitor-reel?id=${encodeURIComponent(postId)}`);
+      if (!response.ok) throw new Error("Reel details failed to load");
+      const payload = await response.json();
+      const fullReel = payload.reel;
+      if (fullReel) {
+        const mergeReel = (reel) => String(reel.id) === String(postId) ? { ...reel, ...fullReel } : reel;
+        if (state.dashboard?.competitorReels) state.dashboard.competitorReels = state.dashboard.competitorReels.map(mergeReel);
+        competitor.reels = (competitor.reels || []).map(mergeReel);
+        post = competitorReelById(competitor, postId);
+      }
+    } catch (error) {
+      $("#competitorDetailStatus").textContent = `${error.message}. You can retry by selecting this reel again.`;
+      return;
+    }
+  }
+
   const scenes = buildSceneTimeline(post);
   const stats = visibleCompetitorStats(competitor, post);
   const scriptLines = nonEmptyLines(buildScriptSummary(post));
@@ -1177,10 +1299,7 @@ function openCompetitorReelDetail(postId) {
     ? meaningfulTags([
         post.pillar,
         post.hook,
-        post.tone || deriveTone(post),
-        post.audioType || deriveAudio(post),
-        post.productionType || deriveProduction(post),
-        post.language,
+        post.strategy,
       ])
     : [];
   const visibleScenes = scenes.length
@@ -1238,7 +1357,7 @@ function openCompetitorReelDetail(postId) {
     .map((item) => `<div class="detail-stat"><small>${escapeHtml(item.label)}</small><strong>${escapeHtml(item.value)}</strong></div>`)
     .join("");
   $("#competitorDetailTags").innerHTML = tags.length
-    ? tags.map((tag) => `<span class="detail-tag">${escapeHtml(tag)}</span>`).join("")
+    ? tags.map((tag) => `<span class="detail-tag ${strategyTagClass(tag)}"><span class="detail-tag-mark" aria-hidden="true"></span>${escapeHtml(tag)}</span>`).join("")
     : "";
   $("#competitorDetailScript").innerHTML = scriptLines.length
     ? scriptLines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")
@@ -1322,6 +1441,11 @@ function filteredPosts() {
     if (!search) return true;
     const haystack = [
       postDisplayTitle(post),
+      post.title,
+      post.caption,
+      post.transcript,
+      post.sourceName,
+      post.sourceHandle,
       post.hook,
       post.pillar,
       post.format,
@@ -1379,7 +1503,7 @@ function renderPostExplorer() {
     .map((post) => `
       <button type="button" class="post-row" data-post-id="${escapeHtml(post.id)}">
         <span class="post-cell post-title-cell" data-label="Post">
-          <span class="post-thumb">${escapeHtml(initialsForPost(post))}</span>
+          ${postThumbnailMarkup(post)}
           <span>
             <strong>${escapeHtml(postDisplayTitle(post))}</strong>
             ${hasTranscriptContent(post) ? `<span class="post-ready-badge">Transcript ready</span>` : ""}
@@ -1390,7 +1514,7 @@ function renderPostExplorer() {
           <span class="post-pill soft">${escapeHtml(shortText(post.hook, "", 28))}</span>
         </span>
         <span class="post-cell" data-label="Style"><span class="post-pill">${escapeHtml(post.format)}</span></span>
-        <span class="post-cell" data-label="Pillar"><span class="post-pill">${escapeHtml(post.pillar)}</span></span>
+        <span class="post-cell" data-label="Pillar"><span class="post-pill">${escapeHtml(normalizePillarLabel(post.pillar, "General"))}</span></span>
         <span class="post-cell metric-stack" data-label="Views"><span class="metric-bar"><i style="width:${Math.max(6, Math.min(100, Number(post.views || 0) / Math.max(...posts.map((item) => Number(item.views || 0)), 1) * 100))}%"></i></span><strong>${escapeHtml(post.viewsLabel)}</strong></span>
         <span class="post-cell metric-stack" data-label="Retention"><strong>${escapeHtml(post.retentionLabel)}</strong></span>
         <span class="post-cell metric-stack" data-label="Engagement"><strong>${escapeHtml(post.engagementRateLabel)}</strong></span>
@@ -1426,11 +1550,7 @@ function openPostModal(postId, options = {}) {
   const tags = [
     post.pillar,
     post.hook,
-    post.tone || deriveTone(post),
-    post.audioType || deriveAudio(post),
-    post.productionType || deriveProduction(post),
-    post.collabLabel || "",
-    post.language || post.platform
+    post.strategy,
   ].filter(Boolean);
   $("#postDetailHeader").innerHTML = `
     <div class="detail-title-row">
@@ -1462,7 +1582,7 @@ function openPostModal(postId, options = {}) {
     `)
     .join("") || `<p class="empty-copy">Real timestamped transcript is not attached for this reel yet.</p>`;
   $("#postDetailTags").innerHTML = tags.length
-    ? tags.map((tag) => `<span class="detail-tag">${escapeHtml(tag)}</span>`).join("")
+    ? tags.map((tag) => `<span class="detail-tag ${strategyTagClass(tag)}"><span class="detail-tag-mark" aria-hidden="true"></span>${escapeHtml(tag)}</span>`).join("")
     : `<p class="empty-copy">No AI tags saved yet. Run analysis to generate hook, tone, and production labels.</p>`;
   $("#postDetailStats").innerHTML = `
     <div class="detail-stat"><small>Views</small><strong>${escapeHtml(post.viewsLabel)}</strong></div>
@@ -1832,6 +1952,72 @@ function renderBars(containerId, items, metricKey, color) {
     .join("");
 }
 
+function comparisonItems(data, group) {
+  if (group === "hook") return data.charts?.hooks || [];
+  const field = group === "format" ? "format" : "pillar";
+  const groups = new Map();
+  (data.posts || []).forEach((post) => {
+    const label = String(post[field] || "General").trim() || "General";
+    const current = groups.get(label) || { label, posts: 0, views: 0, retention: 0, saves: 0 };
+    current.posts += 1;
+    current.views += Number(post.views || 0);
+    current.retention += Number(post.retention || 0);
+    current.saves += Number(post.saves || 0);
+    groups.set(label, current);
+  });
+  return [...groups.values()]
+    .map((item) => ({
+      ...item,
+      avgViews: item.posts ? Math.round(item.views / item.posts) : 0,
+      avgRetention: item.posts ? Number((item.retention / item.posts).toFixed(1)) : 0,
+    }))
+    .sort((left, right) => right.avgViews - left.avgViews)
+    .slice(0, 8);
+}
+
+function renderComparisonGroup(data, group = state.comparisonGroup) {
+  const groupMap = { hook: "Hook type", format: "Shooting style", pillar: "Content pillar" };
+  state.comparisonGroup = group;
+  document.querySelectorAll("#hookChart .mini-tabs button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.comparisonGroup === group);
+  });
+  const items = comparisonItems(data, group);
+  renderBars("#hookBars", items, "avgViews", "linear-gradient(135deg,#7a64ff,#9b87ff)");
+  const stats = $("#groupStats");
+  if (stats) {
+    stats.innerHTML = items.slice(0, 3).map((item, index) => `
+      <article class="group-stat-card">
+        <small>${index === 0 ? "Most views" : index === 1 ? "Best retention" : "Most saves"}</small>
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${index === 1 ? `${escapeHtml(item.avgRetention)}% avg watch` : `${escapeHtml(compactNumber(index === 2 ? item.saves || 0 : item.avgViews))} avg`}</span>
+      </article>
+    `).join("");
+  }
+  const heading = $("#hookChart .panel-head h2");
+  if (heading) heading.textContent = `Group & compare · ${groupMap[group] || groupMap.hook}`;
+}
+
+function renderHookReference(hookStats) {
+  const target = $("#hookReferenceGrid");
+  if (!target) return;
+  const activeHooks = new Set((hookStats || []).map((item) => String(item.label || "").trim()).filter(Boolean));
+  const cards = HOOK_REFERENCE
+    .map((item) => ({ ...item, active: activeHooks.has(item.label) }))
+    .sort((left, right) => Number(right.active) - Number(left.active) || left.label.localeCompare(right.label));
+  target.innerHTML = cards
+    .map((item) => `
+      <article class="hook-reference-card ${item.active ? "active" : ""}">
+        <div class="hook-reference-head">
+          <strong>${escapeHtml(item.label)}</strong>
+          ${item.active ? `<span class="hook-reference-state">Active</span>` : ""}
+        </div>
+        <p>${escapeHtml(item.summary)}</p>
+        <small>${escapeHtml(item.signals)}</small>
+      </article>
+    `)
+    .join("");
+}
+
 function renderHeatmap(cells) {
   if (!cells.some((cell) => cell.posts)) {
     $("#heatmapGrid").innerHTML = emptyMarkup("No posting-window data in this filter range yet.");
@@ -1974,9 +2160,12 @@ function renderDashboard(data) {
 
   $("#insights").innerHTML = data.insights
     .map(
-      (insight) => `
-        <article class="insight-card">
-          <small>${escapeHtml(insight.tag)}</small>
+      (insight, index) => `
+        <article class="insight-card insight-card-${index + 1}">
+          <div class="insight-card-top">
+            <small>${escapeHtml(insight.tag)}</small>
+            <span class="insight-card-index">${String(index + 1).padStart(2, "0")}</span>
+          </div>
           <strong>${escapeHtml(insight.title)}</strong>
           <p>${escapeHtml(insight.body)}</p>
           <button class="ghost-button insight-link" data-citation-view="${escapeHtml(insight.citation.view)}" data-citation-section="${escapeHtml(insight.citation.section)}">${escapeHtml(insight.citation.label)}</button>
@@ -1984,14 +2173,6 @@ function renderDashboard(data) {
       `,
     )
     .join("") || emptyMarkup("Insights will appear once enough analytics data is available.");
-
-  $("#groupStats").innerHTML = (data.charts.hooks || []).slice(0, 3).map((item, index) => `
-    <article class="group-stat-card">
-      <small>${index === 0 ? "Most views" : index === 1 ? "Best retention" : "Most saves"}</small>
-      <strong>${escapeHtml(item.label)}</strong>
-      <span>${index === 1 ? `${escapeHtml(item.avgRetention)}% avg watch` : `${escapeHtml(compactNumber(index === 2 ? item.saves || 0 : item.avgViews))} avg`}</span>
-    </article>
-  `).join("");
 
   document.querySelectorAll(".insight-link").forEach((button) => {
     button.onclick = () => {
@@ -2128,6 +2309,9 @@ function renderDashboard(data) {
       </div>
       <h2 class="featured-news-title">${escapeHtml(visibleFeaturedStory.headline)}</h2>
       <p class="featured-news-summary">${escapeHtml(visibleFeaturedStory.summary)}</p>
+      <div class="featured-news-signal-row">
+        ${(visibleFeaturedStory.matchedSignals || []).slice(0, 3).map((signal) => `<span class="news-signal-pill">${escapeHtml(signal)}</span>`).join("")}
+      </div>
       <div class="featured-news-actions">
         <button class="primary-news-action" data-story-id="${escapeHtml(visibleFeaturedStory.id || "")}" data-story-prompt="${escapeHtml(buildNewsPrompt(visibleFeaturedStory))}" type="button">Create reel brief</button>
         ${visibleFeaturedStory.url ? `<a class="story-source-link" href="${escapeHtml(visibleFeaturedStory.url)}" target="_blank" rel="noreferrer">Source ↗</a>` : ""}
@@ -2139,13 +2323,19 @@ function renderDashboard(data) {
     .map(
       (story) => `
         <article class="news-card">
-          <div class="news-meta">
-            <span>${escapeHtml(story.source)}</span>
-            <span>${escapeHtml(story.age)}</span>
+          <div class="news-card-top">
+            <div class="news-meta">
+              <span>${escapeHtml(story.source)}</span>
+              <span>${escapeHtml(story.age)}</span>
+            </div>
+            ${story.topic ? `<span class="news-topic-pill">${escapeHtml(story.topic)}</span>` : ""}
           </div>
           <span class="news-kicker ${recommendationToneClass(story.recommendationLabel)}">${escapeHtml(story.recommendationLabel || "News signal")}</span>
           <strong>${escapeHtml(story.headline)}</strong>
           <p>${escapeHtml(story.summary)}</p>
+          <div class="news-card-signals">
+            ${(story.matchedSignals || []).slice(0, 2).map((signal) => `<span class="news-signal-pill">${escapeHtml(signal)}</span>`).join("")}
+          </div>
           <div class="featured-news-actions">
             <button class="ghost-button story-ghost" data-story-id="${escapeHtml(story.id || "")}" data-story-prompt="${escapeHtml(buildNewsPrompt(story))}">Create reel brief</button>
             ${story.url ? `<a class="story-source-link" href="${escapeHtml(story.url)}" target="_blank" rel="noreferrer">Source ↗</a>` : ""}
@@ -2194,8 +2384,9 @@ function renderDashboard(data) {
     button.onclick = () => sendMessage(button.dataset.suggestion);
   });
 
-  renderBars("#hookBars", data.charts.hooks, "avgViews", "linear-gradient(135deg,#315c4c,#4e7a69)");
+  renderComparisonGroup(data);
   renderBars("#pillarBars", data.charts.pillars, "avgViews", "linear-gradient(135deg,#ba8a27,#d0a44a)");
+  renderHookReference(data.charts.hooks);
   renderHeatmap(data.charts.heatmap);
   renderPostExplorer();
   renderFilters();
@@ -2221,8 +2412,32 @@ function restoreScrollSnapshot(snapshot) {
   if (!snapshot) return;
   const content = document.querySelector(".content");
   requestAnimationFrame(() => {
+    const html = document.documentElement;
+    const previousBehavior = html.style.scrollBehavior;
+    html.style.scrollBehavior = "auto";
     window.scrollTo(snapshot.x || 0, snapshot.y || 0);
     if (content) content.scrollTop = snapshot.contentY || 0;
+    html.style.scrollBehavior = previousBehavior;
+  });
+}
+
+function preserveSectionViewportPosition(selector, render) {
+  const section = $(selector);
+  const content = document.querySelector(".content");
+  const beforeTop = section?.getBoundingClientRect().top ?? null;
+  const beforeContentTop = content?.scrollTop ?? 0;
+  const beforeWindowY = window.scrollY || document.documentElement.scrollTop || 0;
+  render();
+  if (beforeTop === null) return;
+  requestAnimationFrame(() => {
+    const afterTop = section?.getBoundingClientRect().top ?? beforeTop;
+    const delta = afterTop - beforeTop;
+    if (!delta) return;
+    if (content) {
+      content.scrollTop = beforeContentTop + delta;
+    } else {
+      window.scrollTo(0, beforeWindowY + delta);
+    }
   });
 }
 
@@ -2618,6 +2833,10 @@ async function bootApp() {
   renderPinnedInsights();
 }
 
+function clearAppPreload() {
+  document.documentElement.classList.remove("app-preload");
+}
+
 function showAppShell() {
   document.body.classList.remove("auth-locked");
   $("#authGate").hidden = true;
@@ -2700,7 +2919,14 @@ function wireAuthGate() {
       delete state.filters.to;
       syncRangeToolbar();
     }
-    await fetchDashboard();
+    await fetchDashboard({ preserveScroll: true });
+  });
+});
+
+document.querySelectorAll("#hookChart .mini-tabs button").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    renderComparisonGroup(state.dashboard, button.dataset.comparisonGroup || "hook");
   });
 });
 
@@ -2744,8 +2970,12 @@ $(".mini-apply").addEventListener("click", async () => {
 $("#globalSearch").addEventListener("input", (event) => {
   state.postExplorer.search = event.target.value;
   $("#postSearch").value = event.target.value;
-  if (state.activeView !== "performance") openView("performance");
+  const changedView = state.activeView !== "performance";
+  if (changedView) openView("performance", { skipPageScroll: true });
   renderPostExplorer();
+  if (changedView || event.target.value.trim()) {
+    requestAnimationFrame(() => $("#allPostsSection")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
 });
 
 $("#adminToken").addEventListener("input", () => {
@@ -2867,6 +3097,7 @@ $("#enrichReels").onclick = async () => {
     wireAuthGate();
     if (!restoreUserRole()) {
       showAuthGate();
+      clearAppPreload();
       $("#authPassword")?.focus();
       return;
     }
@@ -2874,11 +3105,13 @@ $("#enrichReels").onclick = async () => {
     if (state.activeView === "admin" && !isAdminUser()) {
       state.activeView = "performance";
     }
-    showAppShell();
     await bootApp();
+    showAppShell();
+    clearAppPreload();
   } catch (bootError) {
     console.error("Dashboard boot failed.", bootError);
     showAuthGate();
+    clearAppPreload();
     const error = $("#authError");
     if (error) {
       error.textContent = `Dashboard load failed: ${bootError?.message || "check console"}`;

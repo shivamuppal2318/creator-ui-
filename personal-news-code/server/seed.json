@@ -1,0 +1,133 @@
+{
+  "creator": {
+    "name": "Arjun Vaidya",
+    "niche": "Business, D2C, creator economy"
+  },
+  "header": {
+    "title": "Signal over vanity metrics.",
+    "subtitle": "One place to track what is working, who is moving, and what your next reel should be.",
+    "rangeLabel": "Last 30 days",
+    "syncLabel": "Seeded analytics API active"
+  },
+  "kpis": [
+    {
+      "label": "Views",
+      "value": "4.8M",
+      "delta": "+18% vs previous month",
+      "icon": "views"
+    },
+    {
+      "label": "Followers gained",
+      "value": "+38.4K",
+      "delta": "+11% momentum",
+      "icon": "followers"
+    },
+    {
+      "label": "Saves",
+      "value": "82.1K",
+      "delta": "+24% strongest metric",
+      "icon": "saves"
+    },
+    {
+      "label": "Avg retention",
+      "value": "42.8%",
+      "delta": "-2% from peak cluster",
+      "icon": "retention"
+    }
+  ],
+  "topReels": [
+    {
+      "title": "How much money should you really keep in savings?",
+      "hook": "Question",
+      "pillar": "Personal finance",
+      "views": "812K",
+      "saves": "14.8K"
+    },
+    {
+      "title": "The biggest lie startup founders tell themselves",
+      "hook": "Bold statement",
+      "pillar": "Startup lessons",
+      "views": "604K",
+      "saves": "9.2K"
+    },
+    {
+      "title": "What I learnt after selling a D2C brand",
+      "hook": "Story",
+      "pillar": "Founder journey",
+      "views": "578K",
+      "saves": "11.1K"
+    }
+  ],
+  "insights": [
+    {
+      "tag": "Hook",
+      "title": "Question hooks are still your best opener",
+      "body": "Question-led reels outperform your average by 19% on saves and 11% on completion."
+    },
+    {
+      "tag": "Timing",
+      "title": "7-9 PM is your cleanest posting band",
+      "body": "Weekday evenings remain your most reliable posting window for finance and startup explainers."
+    },
+    {
+      "tag": "Risk",
+      "title": "Bold-statement hooks are getting less efficient",
+      "body": "They still drive clicks, but watch depth is slipping relative to story and question formats."
+    },
+    {
+      "tag": "Opportunity",
+      "title": "Topical commentary is underused",
+      "body": "Your news-reactive reels are too infrequent relative to the niche momentum around policy and funding."
+    }
+  ],
+  "competitors": [
+    {
+      "name": "Raj Shamani",
+      "angle": "Founder + interview clips",
+      "monthlyGrowth": "+12.4%",
+      "bestFormat": "Podcast cutdowns",
+      "warning": "Outpacing on short-form consistency"
+    },
+    {
+      "name": "Ankur Warikoo",
+      "angle": "Personal growth + finance",
+      "monthlyGrowth": "+8.1%",
+      "bestFormat": "Direct-to-camera lessons",
+      "warning": "Higher retention on simple framing"
+    },
+    {
+      "name": "Finance With Sharan",
+      "angle": "Finance education",
+      "monthlyGrowth": "+15.7%",
+      "bestFormat": "Myth-busting explainers",
+      "warning": "Winning the save-heavy audience"
+    }
+  ],
+  "news": [
+    {
+      "source": "Inc42",
+      "age": "18m ago",
+      "headline": "Creator-led brands raised sharply in H1 as audience-first distribution improved margins",
+      "summary": "A strong story for a reel around why distribution-native brands are getting funded again."
+    },
+    {
+      "source": "The Ken",
+      "age": "41m ago",
+      "headline": "Instagram tests a new monetisation layer for Indian creators in closed beta",
+      "summary": "Strong fit for a reel about creator monetisation and what it changes for Indian business creators."
+    },
+    {
+      "source": "Mint",
+      "age": "1h ago",
+      "headline": "Consumer-tech IPO sentiment rebounds after strong subscription-led growth stories",
+      "summary": "Could become a quick market-opinion reel if you want to tie it to D2C capital cycles."
+    }
+  ],
+  "suggestions": [
+    "Why did my last reel underperform?",
+    "What should I post next week?",
+    "Which competitor should I study right now?",
+    "Turn the strongest news story into a reel angle.",
+    "What content format is driving the most saves?"
+  ]
+}

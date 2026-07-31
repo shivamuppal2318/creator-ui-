@@ -1,0 +1,55 @@
+CORE APP FILES
+C:\Users\odckamgllan\Downloads\content creator\server.js
+C:\Users\odckamgllan\Downloads\content creator\app.js
+C:\Users\odckamgllan\Downloads\content creator\app.css
+C:\Users\odckamgllan\Downloads\content creator\index.html
+C:\Users\odckamgllan\Downloads\content creator\package.json
+C:\Users\odckamgllan\Downloads\content creator\.env
+C:\Users\odckamgllan\Downloads\content creator\.env.example
+
+PRIMARY APP DATA
+C:\Users\odckamgllan\Downloads\content creator\data\store.json
+C:\Users\odckamgllan\Downloads\content creator\data\creator-os.db
+
+CURRENT EXPORTS / IMPORTANT JSON
+C:\Users\odckamgllan\Downloads\content creator\data\varun-mayya-reels.json
+C:\Users\odckamgllan\Downloads\content creator\abvaidya-import.json
+C:\Users\odckamgllan\Downloads\content creator\abvaidya-latest-500-low-usage.json
+C:\Users\odckamgllan\Downloads\content creator\abvaidya-latest-all-low-usage.json
+C:\Users\odckamgllan\Downloads\content creator\abvaidya-reels-all-media.json
+C:\Users\odckamgllan\Downloads\content creator\abvaidya-transcribed-export.json
+C:\Users\odckamgllan\Downloads\content creator\amangupta0303-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\ankurwarikoo-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\deepakwadhwa-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\deepakwadhwa.official-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\deepigoyal-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\deepigoyal-latest-100-retry-2026-07-30.json
+C:\Users\odckamgllan\Downloads\content creator\financewithsharan-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\kunalb11-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\kunalb11-latest-100-retry-2026-07-30.json
+C:\Users\odckamgllan\Downloads\content creator\nikhilkamath-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\rajshamani-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\rajshamani-reels-100.json
+C:\Users\odckamgllan\Downloads\content creator\ranveerallahbadia-reels-all-media.json
+C:\Users\odckamgllan\Downloads\content creator\ranveerallahbadia-reels-media.json
+C:\Users\odckamgllan\Downloads\content creator\riteshagar-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\thevarunmayya-latest-100.json
+C:\Users\odckamgllan\Downloads\content creator\updated_with_transcripts.json
+C:\Users\odckamgllan\Downloads\content creator\varunmayya-latest-100.json
+
+UTILITY FILES
+C:\Users\odckamgllan\Downloads\content creator\inspect_json.py
+C:\Users\odckamgllan\Downloads\content creator\inspect_text_export.py
+C:\Users\odckamgllan\Downloads\content creator\inspect_transcript_export.py
+C:\Users\odckamgllan\Downloads\content creator\requirements-local-whisper.txt
+C:\Users\odckamgllan\Downloads\content creator\server-local-whisper-enrich.sh
+
+ARCHIVES
+C:\Users\odckamgllan\Downloads\content creator\code-only.zip
+C:\Users\odckamgllan\Downloads\content creator\personal-news-code.zip
+
+NOTES
+- `data\store.json` is the main JSON store.
+- `data\creator-os.db` is the SQLite DB used by the app.
+- `data\varun-mayya-reels.json` is the clean Varun Mayya export created from current store data.
+- `data\store.before-*.json` files are backups and are intentionally not listed above.

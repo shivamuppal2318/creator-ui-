@@ -291,8 +291,101 @@ function deriveReelTitle(item) {
   return caption.length > 120 ? `${caption.slice(0, 117)}...` : caption;
 }
 
+function canonicalizeHook(value, fallback = "Question Hook") {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return fallback;
+  const normalized = text.toLowerCase();
+
+  if (/(^|\b)(question|rhetorical|why|what if|have you|are you|would you|ask)(\b|$)/.test(normalized)) return "Question Hook";
+  if (/(curiosity|open loop|gap|withhold|wait until|nobody expected|changed everything)/.test(normalized)) return "Curiosity Gap";
+  if (/(^|\b)(direct hook|direct|straight to value|no delay|let me show|here's how|explainer|framework|how to)(\b|$)/.test(normalized)) return "Direct Hook";
+  if (/(negative|pain|mistake|loss|risk|wasting|danger|never buy)/.test(normalized)) return "Negative Hook";
+  if (/(positive promise|promise|benefit|double|grow faster|learn this)/.test(normalized)) return "Positive Promise";
+  if (/(story|narrative|three years ago|last night|yesterday this happened)/.test(normalized)) return "Story Opening";
+  if (/(pattern interrupt|interrupt|stop scrolling|unexpected opening|throws|absurd statement)/.test(normalized)) return "Pattern Interrupt";
+  if (/(social proof|testimonial|users|revenue|made .*\d|million people use|client made)/.test(normalized)) return "Social Proof";
+  if (/(authority|expert|expertise|credential|as a doctor|working with|ten years)/.test(normalized)) return "Authority Hook";
+  if (/(observation|everyone does this|we've all seen|rich people think differently|everyday truth)/.test(normalized)) return "Observation Hook";
+  if (/(myth|busting|this advice is wrong|forget everything you've heard)/.test(normalized)) return "Myth Busting";
+  if (/(controversial|polariz|college is a scam|hustle culture is fake|bold statement)/.test(normalized)) return "Controversial Hook";
+  if (/(news|announcement|big update|launched|announced|timeliness)/.test(normalized)) return "News / Announcement";
+  if (/(data hook|data|stat|statistics|research shows|numbers first|92%)/.test(normalized)) return "Data Hook";
+  if (/(identity|if you're|every student should watch this|specific audience)/.test(normalized)) return "Identity Hook";
+  if (/(command hook|command|listen carefully|save this|imperative)/.test(normalized)) return "Command Hook";
+  if (/(emotional|emotion|fear|joy|shock|empathy|anger|excitement)/.test(normalized)) return "Emotional Hook";
+  if (/(aspiration|future self|financially free|without an alarm)/.test(normalized)) return "Aspiration Hook";
+  if (/(visual|before\/after transformation|dramatic reveal|extreme zoom|muted)/.test(normalized)) return "Visual Hook";
+  if (/(shock hook|shock|surprising|disbelief|jarring|i lost)/.test(normalized)) return "Shock Hook";
+  if (/(demonstration|demo|show don't tell|watch this|in action)/.test(normalized)) return "Demonstration Hook";
+  if (/(transformation|before and after|before\/after|visible change|looked like this yesterday)/.test(normalized)) return "Transformation Hook";
+  if (/(contrarian|unpopular|against common advice|you don't need)/.test(normalized)) return "Contrarian Hook";
+  if (/(speed|quick|30 seconds|5 minutes|time compression|fast)/.test(normalized)) return "Speed Hook";
+
+  return fallback;
+}
+
+const STRATEGY_LABELS = [
+  "Education", "How-To", "Framework", "Storytelling", "Observation", "Authority Building",
+  "Social Proof", "Case Study", "Breakdown", "Comparison", "Myth Busting", "Personal Brand",
+  "Documentation", "Entertainment", "Inspiration", "Community Building", "Product Led", "Sales",
+  "Trend Based", "News", "Reaction", "Challenge / Experiment", "Before & After", "Opinion / Hot Take", "Listicle",
+];
+
+function strategySourceText(reel) {
+  const transcript = String(reel.transcript || "").replace(/\s+/g, " ").trim();
+  const segments = Array.isArray(reel.timestampedTranscript)
+    ? reel.timestampedTranscript.map((segment) => String(segment?.text || "").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 5).join(" ")
+    : "";
+  const summary = Array.isArray(reel.scriptSummary)
+    ? reel.scriptSummary.map((line) => String(line || "").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 3).join(" ")
+    : "";
+  const fallback = [reel.caption, reel.title].map((value) => String(value || "").replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
+  return (segments || transcript || summary || fallback).slice(0, 900);
+}
+
+function canonicalizeStrategy(value, fallback = "Education") {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return fallback;
+  const normalized = text.toLowerCase();
+  const aliases = [
+    ["How-To", /how[- ]?to|tutorial|step[- ]by[- ]step|actionable steps|process/],
+    ["Framework", /framework|formula|blueprint|method|system|model|funnel/],
+    ["Storytelling", /storytelling|narrative|beginning.*middle|conflict|resolution/],
+    ["Observation", /observation|most people|we all|i.ve noticed|human behavior|market behavior/],
+    ["Authority Building", /authority|expertise|years of experience|lessons learned|professional knowledge/],
+    ["Social Proof", /social proof|revenue|followers|testimonial|clients|awards|case results/],
+    ["Case Study", /case study|specific campaign|specific company|real numbers|walks through/],
+    ["Breakdown", /breakdown|analy[sz]e|ad analysis|business analysis|website review|landing page review/],
+    ["Comparison", /comparison| vs |better than|difference|pros and cons/],
+    ["Myth Busting", /myth|misconception|wrong advice|popular myth/],
+    ["Personal Brand", /personal philosophy|life lesson|my opinion|my thoughts|beliefs|values/],
+    ["Documentation", /day in (the )?life|building in public|behind the scenes|office vlog|travel vlog/],
+    ["Entertainment", /comedy|meme|funny|humou?r|skit/],
+    ["Inspiration", /mindset|success|dreams|purpose|motivat|inspir/],
+    ["Community Building", /poll|comment below|tell me|inside joke|audience participation/],
+    ["Product Led", /product|use case|problem solved|tool|app|software/],
+    ["Sales", /buy now|discount|offer|book a call|cta|lead magnet|sign up|available now/],
+    ["Trend Based", /trending audio|viral format|challenge|trend|meme format/],
+    ["News", /news|announcement|launch|launched|update|current event|breaking/],
+    ["Reaction", /reaction|duet|reply|stitch|responding to|in response to|quote/],
+    ["Challenge / Experiment", /i tried|we tested|let.s see|experiment|challenge|before results/],
+    ["Before & After", /before and after|before \/ after|transformation|growth over time|improvement/],
+    ["Opinion / Hot Take", /unpopular opinion|hot take|i believe|everyone disagrees|here.s why i think/],
+    ["Listicle", /top \d+|\d+ mistakes|\d+ tools|\d+ lessons|first,|second,|third,/],
+    ["Education", /explain|definition|what is|concept|learn|teaches|understand|means/],
+  ];
+  const match = aliases.find(([, pattern]) => pattern.test(normalized));
+  return match ? match[0] : (STRATEGY_LABELS.includes(text) ? text : fallback);
+}
+
+function deriveStrategy(reel) {
+  const existing = canonicalizeStrategy(reel.strategy || "", "");
+  if (existing && STRATEGY_LABELS.includes(existing)) return existing;
+  return canonicalizeStrategy(strategySourceText(reel), "Education");
+}
+
 function deriveHook(item) {
-  return pickValue(item, ["hook", "opening", "hookType", "contentDetails.hook", "analysis.hook"], "Question");
+  return canonicalizeHook(pickValue(item, ["hook", "opening", "hookType", "contentDetails.hook", "analysis.hook"], "Question Hook"));
 }
 
 async function readStore() {
@@ -525,12 +618,14 @@ function normalizeReel(reel) {
     ? reel.scriptSummary.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 6)
     : [];
   const transcript = String(reel.transcript || timestampedTranscript.map((segment) => segment.text).join("\n") || "");
+  const pillar = normalizePillarLabel(reel.pillar, "General");
   return {
     id: String(reel.id || `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: String(reel.title || "Untitled reel"),
     platform: String(reel.platform || "instagram"),
-    pillar: String(reel.pillar || "General"),
-    hook: String(reel.hook || "Question"),
+    pillar,
+    hook: canonicalizeHook(reel.hook || "Question Hook"),
+    strategy: deriveStrategy({ ...reel, transcript, timestampedTranscript, scriptSummary }),
     format: String(reel.format || "Short video"),
     postedAt: String(reel.postedAt || new Date().toISOString()),
     views: Number(reel.views || 0),
@@ -564,6 +659,13 @@ function normalizeReel(reel) {
     sourceFollowers: Number(reel.sourceFollowers || 0),
     sourceName: String(reel.sourceName || "")
   };
+}
+
+function normalizePillarLabel(value, fallback = "General") {
+  const label = String(value || "").trim();
+  if (!label) return fallback;
+  if (/^imported(\s+competitor)?$/i.test(label)) return fallback;
+  return label;
 }
 
 function hasTranscriptPayload(reel) {
@@ -1619,7 +1721,7 @@ function computeCompetitorRows(store) {
           const followers = Number(profile.followers || legacy?.followers || 0);
           const postsPerWeek = Number(legacy?.postsPerWeekSeed || 0);
           const avgViews = Number(legacy?.avgViewsSeed || 0);
-          const topHook = String(legacy?.topHookSeed || legacy?.warning || "Story hook");
+          const topHook = canonicalizeHook(legacy?.topHookSeed || legacy?.warning || "Question Hook");
           return {
             name: profile.name || legacy?.name || profile.handle,
             angle: profile.angle || legacy?.angle || "",
@@ -1652,7 +1754,7 @@ function computeCompetitorRows(store) {
           postsPerWeekLabel: Number(competitor.postsPerWeekSeed || 0) ? round(Number(competitor.postsPerWeekSeed || 0), 1).toFixed(1) : "0.0",
           avgViews: Number(competitor.avgViewsSeed || 0),
           avgViewsLabel: fmtCompact(Number(competitor.avgViewsSeed || 0)),
-          topHook: String(competitor.topHookSeed || competitor.warning || "Story hook"),
+          topHook: canonicalizeHook(competitor.topHookSeed || competitor.warning || "Question Hook"),
           monthlyGrowthLabel: fmtSignedPercent(competitor.monthlyGrowth, 1),
           followersLabel: fmtCompact(competitor.followers),
           engagementRateLabel: fmtPercent(competitor.engagementRate, 1)
@@ -1681,7 +1783,9 @@ function computeCompetitorRows(store) {
       const topPost = [...reels].sort((left, right) => right.views - left.views)[0];
       const importedPosts = reels.length || Number(legacy?.importedPosts || 0);
       const bestFormat = reels.length ? bestLabelByViews(reels, "format", legacy?.bestFormat || "Unknown") : (legacy?.bestFormat || "Unknown");
-      const topHook = String(legacy?.topHookSeed || legacy?.warning || "Story hook");
+      const topHook = reels.length
+        ? bestLabelByViews(reels, "hook", canonicalizeHook(legacy?.topHookSeed || legacy?.warning || "Question Hook"))
+        : canonicalizeHook(legacy?.topHookSeed || legacy?.warning || "Question Hook");
       const warning = topPost?.title || legacy?.warning || "No content imported yet";
       const topPostTitle = topPost?.title || legacy?.topPostTitle || "";
       const topPostUrl = topPost?.url || legacy?.topPostUrl || "";
@@ -1946,6 +2050,30 @@ async function decorateDashboard(store, dashboard) {
       : dashboard.insights,
     suggestions: decorations.suggestions?.length ? decorations.suggestions : dashboard.suggestions,
     news
+  };
+}
+
+function compactDashboard(dashboard) {
+  const compactReel = (reel) => {
+    const fields = [
+      "id", "title", "url", "thumbnailUrl", "platform", "pillar", "hook", "strategy", "format", "postedAt",
+      "views", "likes", "comments", "shares", "saves", "retention", "watchTime",
+      "followersGained", "sourceHandle", "sourceName", "viewsLabel", "likesLabel",
+      "commentsLabel", "savesLabel", "engagementRateLabel", "retentionLabel", "watchTimeLabel",
+      "postedAtLabel"
+    ];
+    return Object.fromEntries(fields.filter((field) => field in reel).map((field) => [field, reel[field]]));
+  };
+  return {
+    ...dashboard,
+    posts: (dashboard.posts || []).map(compactReel),
+    topReels: (dashboard.topReels || []).map(compactReel),
+    competitors: (dashboard.competitors || []).map((competitor) => ({
+      ...competitor,
+      reels: (competitor.reels || []).map(compactReel),
+    })),
+    // Competitor rows already contain the summaries needed for the page. Full reel data is lazy-loaded on click.
+    competitorReels: [],
   };
 }
 
@@ -2738,7 +2866,7 @@ async function analyzeTranscriptWithGemini(reel, transcript, segments) {
   const payload = safeJsonObject(interactionOutputText(result), fallbackTranscriptAnalysis(reel, transcript, segments));
   return {
     pillar: sanitizeShortLabel(payload.pillar, reel.pillar || "General", 40),
-    hook: sanitizeShortLabel(payload.hook, reel.hook || "Question", 72),
+    hook: canonicalizeHook(sanitizeShortLabel(payload.hook, reel.hook || "Question Hook", 72), reel.hook || "Question Hook"),
     tone: sanitizeShortLabel(payload.tone, "Direct", 40),
     audioType: sanitizeShortLabel(payload.audioType, "Original voice", 32),
     productionType: sanitizeShortLabel(payload.productionType, reel.format || "Short video", 40),
@@ -3000,7 +3128,7 @@ function mapApifyItemToReel(item) {
     id: pickValue(item, ["id", "postId", "shortCode", "url", "inputUrl"], `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: deriveReelTitle(item),
     platform: normalizePlatform(pickValue(item, ["platform", "sourcePlatform", "owner.platform"], "instagram")),
-    pillar: pickValue(item, ["pillar", "category", "contentPillar", "analysis.pillar"], "Imported"),
+    pillar: normalizePillarLabel(pickValue(item, ["pillar", "category", "contentPillar", "analysis.pillar"], "General"), "General"),
     hook: deriveHook(item),
     format: pickValue(item, ["format", "contentType", "mediaType", "type"], "Short video"),
     postedAt: pickValue(item, ["postedAt", "publishedAt", "timestamp", "createTimeISO", "takenAtTimestamp"], new Date().toISOString()),
@@ -3084,7 +3212,7 @@ function mapBrightDataItemToReel(item) {
     id: pickValue(item, ["id", "post_id", "pk", "code", "shortcode", "short_code", "url"], `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: deriveReelTitle(item),
     platform: "instagram",
-    pillar: pickValue(item, ["pillar", "category", "topic"], "Imported"),
+    pillar: normalizePillarLabel(pickValue(item, ["pillar", "category", "topic"], "General"), "General"),
     hook: deriveHook(item),
     format: pickValue(item, ["format", "type", "media_type", "product_type"], "Reel"),
     postedAt: pickValue(item, ["posted_at", "timestamp", "taken_at_timestamp", "created_at"], new Date().toISOString()),
@@ -3761,8 +3889,51 @@ createServer(async (request, response) => {
   try {
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const store = await readStore();
-      const dashboard = await decorateDashboard(store, computeDashboard(store, Object.fromEntries(url.searchParams.entries())));
-      return replyJson(response, 200, dashboard);
+      const query = Object.fromEntries(url.searchParams.entries());
+      const dashboard = await decorateDashboard(store, computeDashboard(store, query));
+      return replyJson(response, 200, query.compact === "1" ? compactDashboard(dashboard) : dashboard);
+    }
+
+    if (url.pathname === "/api/competitor-reel" && request.method === "GET") {
+      const id = String(url.searchParams.get("id") || "");
+      const store = await readStore();
+      const reel = (store.competitorReels || []).map(normalizeReel).find((item) => item.id === id);
+      if (!reel) return replyJson(response, 404, { error: "Competitor reel not found." });
+      return replyJson(response, 200, { reel });
+    }
+
+    if (url.pathname === "/api/reel-thumbnail" && request.method === "GET") {
+      const id = String(url.searchParams.get("id") || "");
+      const requestedSource = String(url.searchParams.get("src") || "");
+      const store = await readStore();
+      const reel = [...(store.reels || []), ...(store.competitorReels || [])]
+        .map(normalizeReel)
+        .find((item) => item.id === id);
+      const thumbnailUrl = String(reel?.thumbnailUrl || requestedSource || "");
+      if (!thumbnailUrl || !/^https:\/\/(?:[^/]+\.)*(?:instagram\.com|cdninstagram\.com|fbcdn\.net)\//i.test(thumbnailUrl)) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      const imageResponse = await fetch(thumbnailUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+          Referer: "https://www.instagram.com/"
+        }
+      });
+      if (!imageResponse.ok) {
+        response.writeHead(imageResponse.status);
+        response.end();
+        return;
+      }
+      const contentType = imageResponse.headers.get("content-type") || "image/jpeg";
+      response.writeHead(200, {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=3600"
+      });
+      response.end(Buffer.from(await imageResponse.arrayBuffer()));
+      return;
     }
 
     if (url.pathname === "/api/chart-series" && request.method === "GET") {

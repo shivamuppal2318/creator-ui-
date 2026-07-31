@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Creator OS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/app.css?v=20260728-0010" />
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true">
+      <i></i>
+      <i></i>
+      <i></i>
+    </div>
+    <main class="auth-gate" id="authGate">
+      <section class="auth-panel">
+        <div class="auth-brand">
+          <div class="brand-mark">A</div>
+          <div>
+            <strong>Advantage</strong>
+            <span>Creator Intelligence</span>
+          </div>
+        </div>
+        <div class="auth-copy">
+          <p class="eyebrow">Private access</p>
+          <h1>Enter access code</h1>
+          <p>Use the shared code to open the dashboard.</p>
+        </div>
+        <form id="authForm" class="auth-form" novalidate>
+          <label class="auth-field">
+            <span>Access code</span>
+            <input id="authPassword" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Enter code" />
+          </label>
+          <button type="submit" class="auth-submit" id="authSubmit">Open dashboard</button>
+          <p class="auth-error" id="authError" hidden>Incorrect code.</p>
+        </form>
+      </section>
+    </main>
+
+    <div class="shell" id="appShell" hidden>
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">A</div>
+          <div>
+            <strong>Advantage</strong>
+            <span>Creator Intelligence</span>
+          </div>
+        </div>
+        <p class="nav-label">Workspace</p>
+        <nav class="nav" id="nav"></nav>
+        <p class="nav-label">Coming Soon</p>
+        <div class="nav nav-muted">
+          <button class="nav-item nav-item-muted" type="button" disabled><span class="nav-icon">◌</span><span>Content Calendar</span></button>
+          <button class="nav-item nav-item-muted" type="button" disabled><span class="nav-icon">◌</span><span>Trend Radar</span></button>
+        </div>
+        <div class="profile-card" id="profileCard"></div>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="topbarEyebrow">Content performance</p>
+            <strong class="topbar-title" id="topbarTitle">Every reel, decoded.</strong>
+          </div>
+          <div class="topbar-tools">
+            <label class="global-search">
+              <span>⌕</span>
+              <input id="globalSearch" placeholder="Search reels, hooks, pillars..." />
+            </label>
+            <span class="meta-pill badge-pill" id="prototypeBadge">Prototype · simulated data</span>
+          </div>
+        </header>
+        <header class="hero">
+          <div>
+            <p class="eyebrow" id="heroEyebrow">Content performance · Instagram reels</p>
+            <h1 id="heroTitle"></h1>
+            <p id="heroSubtitle"></p>
+          </div>
+          <div class="hero-meta">
+            <span id="rangeLabel"></span>
+            <span id="syncLabel"></span>
+          </div>
+        </header>
+        <section class="source-strip" id="sourceStrip">
+          <span class="meta-pill" id="reelsSourcePill">Reels</span>
+          <span class="meta-pill" id="newsSourcePill">News</span>
+          <span class="meta-pill" id="transcriptionPill">Transcription</span>
+          <span class="meta-pill" id="aiModePill">AI</span>
+        </section>
+
+        <section class="filters panel">
+          <div class="filters-grid">
+            <label>
+              Range
+              <select id="rangeFilter">
+                <option value="30">30 days</option>
+                <option value="60">60 days</option>
+                <option value="90">90 days</option>
+              </select>
+            </label>
+            <label>
+              Pillar
+              <select id="pillarFilter"></select>
+            </label>
+            <label>
+              Hook
+              <select id="hookFilter"></select>
+            </label>
+            <label>
+              Platform
+              <select id="platformFilter"></select>
+            </label>
+          </div>
+        </section>
+
+        <section class="view active" data-view="performance">
+          <div class="hero-watermark">REELS</div>
+          <div class="performance-ticker" id="performanceTicker"></div>
+          <div class="range-toolbar">
+            <div class="range-segments" id="rangeSegments">
+              <button type="button" data-range-segment="1">Day</button>
+              <button type="button" data-range-segment="7">Week</button>
+              <button type="button" data-range-segment="30" class="active">Month</button>
+              <button type="button" data-range-segment="90">Quarter</button>
+              <button type="button" data-range-segment="custom">Custom</button>
+            </div>
+            <div class="custom-range-inline">
+              <input id="customRangeStart" type="date" />
+              <span>to</span>
+              <input id="customRangeEnd" type="date" />
+              <button type="button" class="mini-apply">Apply</button>
+            </div>
+            <small class="meta-copy" id="summaryStats"></small>
+          </div>
+
+          <div class="performance-kpi-grid" id="kpiGrid"></div>
+
+          <div class="reference-two-col">
+            <article class="panel reference-chart-panel" id="trendChart">
+              <div class="panel-head">
+                <div>
+                  <h2>Performance trend</h2>
+                  <p class="rail-copy">Views & engagement rate over the selected range</p>
+                </div>
+                <div class="mini-tabs">
+                  <button type="button" class="active">Views</button>
+                  <button type="button">Watch time</button>
+                  <button type="button">Followers</button>
+                </div>
+              </div>
+              <div class="chart-shell" id="trendCanvas"></div>
+            </article>
+
+            <article class="panel reference-chart-panel" id="heatmap">
+              <div class="panel-head">
+                <div>
+                  <h2>Best time to post</h2>
+                  <p class="rail-copy">Avg engagement rate by day & slot</p>
+                </div>
+              </div>
+              <div class="heatmap reference-heatmap" id="heatmapGrid"></div>
+            </article>
+          </div>
+
+          <div class="reference-two-col">
+            <article class="panel reference-chart-panel" id="hookChart">
+              <div class="panel-head">
+                <div>
+                  <h2>Group & compare</h2>
+                  <p class="rail-copy">Average views (bars) vs retention (line)</p>
+                </div>
+                <div class="mini-tabs">
+                  <button type="button" class="active">Hook type</button>
+                  <button type="button">Shooting style</button>
+                  <button type="button">Content pillar</button>
+                </div>
+              </div>
+              <div class="bars reference-bars" id="hookBars"></div>
+              <div class="group-stats-grid" id="groupStats"></div>
+            </article>
+
+            <article class="panel reference-chart-panel" id="pillarChart">
+              <div class="panel-head">
+                <div>
+                  <h2>Engagement mix</h2>
+                  <p class="rail-copy">Where interactions come from, by pillar</p>
+                </div>
+              </div>
+              <div class="bars reference-bars" id="pillarBars"></div>
+            </article>
+          </div>
+
+          <div class="reference-two-col performers-layout">
+            <article class="panel" id="topReelsSection">
+              <div class="panel-head">
+                <div>
+                  <h2>Top performers</h2>
+                  <p class="rail-copy">Highest views in range</p>
+                </div>
+              </div>
+              <div class="stack-list top-performer-list" id="topReels"></div>
+            </article>
+
+            <article class="panel" id="pinnedInsightsSection">
+              <div class="panel-head">
+                <div>
+                  <h2>Needs a rethink</h2>
+                  <p class="rail-copy">Lowest views in range</p>
+                </div>
+              </div>
+              <div class="stack-list top-performer-list" id="pinnedInsights"></div>
+            </article>
+          </div>
+
+          <article class="panel" id="insightsSection">
+            <div class="panel-head">
+              <div>
+                <h2>AI insights</h2>
+                <p class="rail-copy">Auto-generated from your current reel set</p>
+              </div>
+              <button type="button" class="ghost-button">Regenerate</button>
+            </div>
+            <div class="insight-grid reference-insight-grid" id="insights"></div>
+          </article>
+
+          <article class="panel all-posts-panel" id="allPostsSection">
+            <div class="panel-head panel-head-stack panel-head-explorer">
+              <div>
+                <h2>Reel-level breakdown</h2>
+                <p class="rail-copy">Click a column to sort and any row for a scene-by-scene breakdown.</p>
+              </div>
+              <div class="post-explorer-controls inline-tight">
+                <input id="postSearch" placeholder="Search caption / hook / pillar / format..." />
+                <select id="postHookFilter"></select>
+                <select id="postFormatFilter"></select>
+                <select id="postPillarFilter"></select>
+                <select id="postSort">
+                  <option value="postedAt">Newest</option>
+                  <option value="views">Views</option>
+                  <option value="likes">Likes</option>
+                  <option value="comments">Comments</option>
+                  <option value="saves">Saves</option>
+                  <option value="engagementRate">Engagement</option>
+                  <option value="retention">Retention</option>
+                </select>
+                <select id="postPlatformFilter"></select>
+              </div>
+              <small class="meta-copy" id="postsCountLabel"></small>
+            </div>
+            <div class="posts-table-shell reference-table-shell">
+              <div class="posts-table-head">
+                <span>Reel</span>
+                <span>Hook</span>
+                <span>Style</span>
+                <span>Pillar</span>
+                <span>Views</span>
+                <span>Retention</span>
+                <span>Eng. Rate</span>
+                <span>Saves</span>
+                <span>Followers +</span>
+              </div>
+              <div class="posts-table-body" id="allPostsTable"></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="view" data-view="competitors">
+          <div class="intel-shell">
+            <section class="intel-hero">
+              <div>
+                <p class="eyebrow">Competitor intelligence</p>
+                <h1 class="intel-title">Know the niche <span>cold.</span></h1>
+                <p class="intel-subcopy">Who is growing, what is working for them, and which content gaps are still open for you.</p>
+              </div>
+            </section>
+            <div class="intel-summary" id="competitorSummary"></div>
+            <div class="competitor-panel-grid">
+              <article class="panel competitor-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>Head-to-head</h2>
+                    <p class="rail-copy">Arjun vs a tracked creator, inside the visible range.</p>
+                  </div>
+                  <select id="competitorCompareSelect" class="competitor-compare-select"></select>
+                </div>
+                <div class="competitor-vs-grid" id="competitorHeadToHead"></div>
+              </article>
+              <article class="panel competitor-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>Positioning radar</h2>
+                    <p class="rail-copy">Normalized vs tracked-set leader (100 = best visible signal).</p>
+                  </div>
+                </div>
+                <div class="competitor-radar-list" id="competitorRadar"></div>
+              </article>
+            </div>
+            <div class="competitor-panel-grid competitor-panel-grid-wide">
+              <article class="panel competitor-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>Recent viral posts in your niche</h2>
+                    <p class="rail-copy">Top visible breakout posts across imported competitor reels.</p>
+                  </div>
+                </div>
+                <div class="competitor-viral-list" id="competitorViralPosts"></div>
+              </article>
+            </div>
+            <div class="competitor-panel-grid">
+              <article class="panel competitor-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>What competitors are doing better</h2>
+                    <p class="rail-copy">AI observations from imported cross-account signals.</p>
+                  </div>
+                </div>
+                <div class="competitor-insight-stack" id="competitorAdvantageCards"></div>
+              </article>
+              <article class="panel competitor-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>Content opportunities</h2>
+                    <p class="rail-copy">Gaps the tracked set is not owning yet.</p>
+                  </div>
+                </div>
+                <div class="competitor-insight-stack" id="competitorOpportunityCards"></div>
+              </article>
+            </div>
+            <article class="panel intel-table-panel" id="competitorsTable">
+              <div class="panel-head panel-head-stack">
+                <div>
+                  <p class="eyebrow">Tracked creators</p>
+                  <h2>Sorted by monthly growth</h2>
+                  <p class="rail-copy">Competitor watchlist shaped around your niche, with hook and format signals visible in one place.</p>
+                </div>
+              </div>
+              <div class="competitor-table-shell">
+                <div class="competitor-table-head">
+                  <span>Creator</span>
+                  <span>Followers</span>
+                  <span>Eng. rate</span>
+                  <span>Monthly</span>
+                  <span>Top hook</span>
+                  <span>Best format</span>
+                  <span>Fastest-growing content</span>
+                </div>
+                <div class="competitor-table-body" id="competitors"></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" data-view="news">
+          <div class="intel-shell">
+            <section class="intel-hero">
+              <div>
+                <p class="eyebrow">News radar</p>
+                <h1 class="intel-title">The niche, <span>as it happens.</span></h1>
+                <p class="intel-subcopy">Stories filtered against your creator niche, ranked for reel-worthiness, and packaged for fast response content.</p>
+              </div>
+            </section>
+            <div class="news-toolbar">
+              <div class="news-category-pills" id="newsCategories"></div>
+              <div class="news-sync-strip" id="newsSyncStrip"></div>
+            </div>
+            <article class="panel featured-news-panel" id="featuredNewsPanel"></article>
+            <div class="news-grid" id="news"></div>
+          </div>
+        </section>
+
+        <section class="view" data-view="assistant">
+          <div class="assistant-reference-layout">
+            <aside class="assistant-history-rail">
+              <button class="assistant-new-chat" id="newChat" type="button">+ New conversation</button>
+              <article class="panel assistant-history-card">
+                <p class="eyebrow">History</p>
+                <div class="history-list" id="chatHistory"></div>
+              </article>
+            </aside>
+
+            <article class="panel assistant-reference-panel">
+              <div class="assistant-reference-head">
+                <div class="assistant-reference-title">
+                  <span class="assistant-orb">✦</span>
+                  <div>
+                    <h2>Advantage Copilot</h2>
+                    <p><span class="assistant-reference-dot"></span><small id="aiMode">Connected to your analytics</small></p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="message-list assistant-reference-messages" id="messages"></div>
+
+              <div class="assistant-reference-actions">
+                <button class="assistant-chip solid" data-suggestion="Build me a weekly plan from my current analytics"><span>◫</span>Weekly plan</button>
+                <button class="assistant-chip solid" data-suggestion="Give me a monthly summary from the current dashboard"><span>╲╱</span>Monthly summary</button>
+                <button class="assistant-chip solid" data-suggestion="Give me 20 content ideas based on my current hooks and pillars"><span>◌</span>20 ideas</button>
+                <button class="assistant-chip solid" data-suggestion="Audit my last reel using the current saved analytics"><span>⌕</span>Audit last reel</button>
+              </div>
+
+              <div class="assistant-reference-prompts" id="suggestions"></div>
+
+              <div class="assistant-reference-context">
+                <div class="context-metrics compact">
+                  <div class="context-metric">
+                    <strong id="assistantPostsCount">0</strong>
+                    <small>Tracked posts</small>
+                  </div>
+                  <div class="context-metric">
+                    <strong id="assistantCompetitorCount">0</strong>
+                    <small>Competitors</small>
+                  </div>
+                  <div class="context-metric">
+                    <strong id="assistantNewsCount">0</strong>
+                    <small>News items</small>
+                  </div>
+                </div>
+                <div class="pin-list hidden-pins" id="pinnedMessages"></div>
+              </div>
+
+              <form class="chat-form assistant-reference-form" id="chatForm">
+                <input id="chatInput" placeholder="Ask anything about your content, competitors, or strategy..." />
+                <button type="submit" aria-label="Send">➤</button>
+              </form>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" data-view="admin">
+          <div class="panel-grid panel-grid-wide">
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Admin access</p>
+                  <h2>Store management</h2>
+                </div>
+              </div>
+              <div class="admin-grid">
+                <label>
+                  Admin token
+                  <input id="adminToken" placeholder="set ADMIN_TOKEN in env" />
+                </label>
+                <label>
+                  Creator name
+                  <input id="creatorName" />
+                </label>
+                <label>
+                  Creator niche
+                  <input id="creatorNiche" />
+                </label>
+                <label>
+                  Creator handle
+                  <input id="creatorHandle" placeholder="abvaidya" />
+                </label>
+                <label>
+                  Dashboard title
+                  <input id="brandingTitle" />
+                </label>
+                <label class="wide">
+                  Dashboard subtitle
+                  <textarea id="brandingSubtitle"></textarea>
+                </label>
+                <label>
+                  Import source
+                  <select id="importSource">
+                    <option value="apify">Apify</option>
+                    <option value="brightdata">Bright Data</option>
+                  </select>
+                </label>
+                <label>
+                  Apify mode
+                  <select id="apifyMode">
+                    <option value="actor">Actor</option>
+                    <option value="task">Task</option>
+                  </select>
+                </label>
+                <label>
+                  Apify actor ID
+                  <input id="apifyActorId" placeholder="username~actor-name" />
+                </label>
+                <label>
+                  Apify task ID
+                  <input id="apifyTaskId" placeholder="username~task-name" />
+                </label>
+                <label>
+                  Bright Data dataset ID
+                  <input id="brightDataDatasetId" placeholder="gd_xxxxxxxx" />
+                </label>
+                <label>
+                  Import strategy
+                  <select id="apifyStrategy">
+                    <option value="reels">Reels</option>
+                    <option value="news">News</option>
+                  </select>
+                </label>
+                <label>
+                  Auto-import Apify
+                  <select id="apifyAutoImportEnabled">
+                    <option value="false">False</option>
+                    <option value="true">True</option>
+                  </select>
+                </label>
+                <label>
+                  Auto-import interval
+                  <select id="apifyAutoImportIntervalMinutes">
+                    <option value="30">30 min</option>
+                    <option value="60" selected>1 hour</option>
+                    <option value="180">3 hours</option>
+                    <option value="360">6 hours</option>
+                  </select>
+                </label>
+                <label>
+                  Auto-import username
+                  <input id="apifyAutoImportUsername" placeholder="abvaidya" />
+                </label>
+                <label>
+                  Enrich batch size
+                  <select id="enrichLimit">
+                    <option value="3">3 reels</option>
+                    <option value="5" selected>5 reels</option>
+                    <option value="10">10 reels</option>
+                    <option value="25">25 reels</option>
+                  </select>
+                </label>
+                <label>
+                  Re-run analyzed reels
+                  <select id="enrichForce">
+                    <option value="false">Skip ready reels</option>
+                    <option value="true">Force refresh</option>
+                  </select>
+                </label>
+                <label class="wide">
+                  Apify input JSON
+                  <textarea id="apifyInput" placeholder='{"directUrls":["https://www.instagram.com/reel/ABC123/"],"resultsLimit":10}'></textarea>
+                </label>
+                <label class="wide">
+                  Competitor handles
+                  <textarea id="competitorProfilesInput" placeholder="financewithsharan|Finance With Sharan|Finance education&#10;rajshamani|Raj Shamani|Founder + interview clips&#10;ankurwarikoo|Ankur Warikoo|Personal growth + finance"></textarea>
+                </label>
+                <p class="admin-note wide">Set `ADMIN_TOKEN`, `APIFY_TOKEN` or `BRIGHT_DATA_API_KEY`, `GEMINI_API_KEY` or `OPENAI_API_KEY`, `WINSTER_API_KEY`, and optional basic-auth env vars on the server. Keep Apify inputs narrow: one username or a few direct reel URLs, low `resultsLimit`, and no downloaded video during import. Auto-import will periodically pull only the configured creator handle, using the same safe defaults. Apify expects an object input like `{"username":["abvaidya"],"resultsLimit":5,"skipPinnedPosts":true}`. Bright Data expects an array input like `[{"url":"https://www.instagram.com/abvaidya/"}]`.</p>
+                <label>
+                  Winster enabled
+                  <select id="winsterEnabled">
+                    <option value="false">False</option>
+                    <option value="true">True</option>
+                  </select>
+                </label>
+                <label>
+                  Winster base URL
+                  <input id="winsterBaseUrl" placeholder="https://your-winster-host" />
+                </label>
+                <label>
+                  Winster path
+                  <input id="winsterPath" placeholder="/chat" />
+                </label>
+                <label>
+                  Winster model
+                  <input id="winsterModel" placeholder="optional-model" />
+                </label>
+                <label class="wide">
+                  Winster API key
+                  <input id="winsterApiKey" placeholder="set WINSTER_API_KEY in env" disabled />
+                </label>
+              </div>
+              <div class="admin-actions">
+                <button id="refreshStore">Refresh store</button>
+                <button id="saveBranding">Save branding</button>
+                <button id="runApify">Run import</button>
+                <button id="refreshReelStats">Refresh reel stats</button>
+                <button id="runCompetitorImport">Import competitors</button>
+                <button id="runLiveNewsImport">Import live news</button>
+                <button id="enrichReels">Transcribe + analyze reels</button>
+              </div>
+              <p class="status-copy" id="adminStatus"></p>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">JSON import</p>
+                  <h2>Reels, competitors, news</h2>
+                </div>
+              </div>
+              <textarea id="importPayload" class="import-box" placeholder='{"reels":[...],"competitors":[...],"news":[...]}'></textarea>
+              <div class="admin-actions">
+                <button id="importStore">Import JSON</button>
+                <button id="exportStore">Export current store</button>
+              </div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </div>
+    <div class="detail-modal" id="postDetailModal" hidden>
+      <div class="detail-backdrop" data-close-post-modal></div>
+      <article class="detail-card post-detail-card">
+        <button class="detail-close" id="closePostModal" aria-label="Close">×</button>
+        <div class="detail-header" id="postDetailHeader">
+          <div class="detail-title-row">
+            <span class="post-thumb large">RE</span>
+            <div>
+              <p class="eyebrow">Scene-by-scene</p>
+              <h3>Loading reel breakdown</h3>
+              <p class="detail-subcopy">The reel summary will appear after the post data is bound.</p>
+            </div>
+          </div>
+        </div>
+        <div class="detail-grid">
+          <section class="detail-column">
+            <div class="detail-block">
+              <div class="detail-block-head">
+                <p class="eyebrow">Scene-by-scene</p>
+                <button class="mini-action" id="analyzeCurrentReel">Analyze this reel</button>
+              </div>
+              <p class="detail-status-copy" id="postDetailStatus">Waiting for reel details.</p>
+              <div class="timeline-list" id="postSceneTimeline">
+                <p class="empty-copy">Click a reel row to load scene notes, caption context, and performance details.</p>
+              </div>
+            </div>
+          </section>
+          <section class="detail-column detail-sidebar">
+            <div class="detail-block">
+              <p class="eyebrow">Strategy tags</p>
+              <div class="detail-tags" id="postDetailTags">
+                <p class="empty-copy">Hook, pillar, tone, audio, and language tags will appear here.</p>
+              </div>
+            </div>
+            <div class="detail-block">
+              <p class="eyebrow">Breakdown</p>
+              <div class="detail-stats" id="postDetailStats">
+                <p class="empty-copy">Views, likes, comments, retention, and source details will appear here.</p>
+              </div>
+            </div>
+            <div class="detail-block">
+              <p class="eyebrow">Script summary</p>
+              <div class="detail-script" id="postDetailScript">
+                <p class="empty-copy">Transcript lines or caption summary will appear here.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </article>
+    </div>
+    <div class="detail-modal" id="competitorDetailModal" hidden>
+      <div class="detail-backdrop" data-close-competitor-modal></div>
+      <article class="detail-card competitor-detail-card">
+        <button class="detail-close" id="closeCompetitorModal" aria-label="Close">×</button>
+        <div class="detail-header" id="competitorDetailHeader"></div>
+        <div class="detail-meta-row competitor-meta-row" id="competitorDetailMeta"></div>
+        <div class="detail-picker-row" id="competitorDetailPickerRow">
+          <label class="detail-picker-label" for="competitorReelSelect">Opponent reel</label>
+          <select id="competitorReelSelect"></select>
+        </div>
+        <div class="detail-grid">
+          <section class="detail-column">
+            <div class="detail-block" id="competitorScenesBlock">
+              <div class="detail-block-head">
+                <p class="eyebrow">Scene-by-scene</p>
+                <button class="mini-action" id="analyzeCompetitorReel">Analyze this reel</button>
+              </div>
+              <p class="detail-status-copy" id="competitorDetailStatus">Select a competitor reel to inspect transcript signals or run analysis.</p>
+              <div class="timeline-list" id="competitorSceneTimeline">
+                <p class="empty-copy">Scene notes for the selected competitor reel will appear here.</p>
+              </div>
+            </div>
+          </section>
+          <section class="detail-column detail-sidebar">
+            <div class="detail-block" id="competitorTagsBlock">
+              <p class="eyebrow">Strategy tags</p>
+              <div class="detail-tags" id="competitorDetailTags"></div>
+            </div>
+            <div class="detail-block" id="competitorStatsBlock">
+              <p class="eyebrow">Breakdown</p>
+              <div class="detail-stats" id="competitorDetailStats"></div>
+            </div>
+            <div class="detail-block" id="competitorScriptBlock">
+              <p class="eyebrow">Script summary</p>
+              <div class="detail-script" id="competitorDetailScript">
+                <p class="empty-copy">Transcript summary or caption highlights will appear here.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </article>
+    </div>
+    <script type="module" src="/app.js?v=20260728-2045"></script>
+  </body>
+</html>
