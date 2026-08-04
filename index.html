@@ -19,7 +19,7 @@
       href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/app.css?v=20260731-jump-fix" />
+    <link rel="stylesheet" href="/app.css?v=20260804-thumbfallback1" />
   </head>
   <body>
     <div class="aurora" aria-hidden="true">
@@ -77,7 +77,7 @@
               <span>⌕</span>
               <input id="globalSearch" placeholder="Search reels, hooks, pillars..." />
             </label>
-            <span class="meta-pill badge-pill" id="prototypeBadge">Prototype · simulated data</span>
+            <span class="meta-pill badge-pill" id="prototypeBadge">Live imported analytics</span>
           </div>
         </header>
         <header class="hero">
@@ -155,9 +155,9 @@
                   <p class="rail-copy">Views & engagement rate over the selected range</p>
                 </div>
                 <div class="mini-tabs">
-                  <button type="button" class="active">Views</button>
-                  <button type="button">Watch time</button>
-                  <button type="button">Followers</button>
+                  <button type="button" class="active" data-trend-metric="views">Views</button>
+                  <button type="button" data-trend-metric="watchTime">Watch time</button>
+                  <button type="button" data-trend-metric="engagements">Engagement</button>
                 </div>
               </div>
               <div class="chart-shell" id="trendCanvas"></div>
@@ -219,16 +219,6 @@
               </div>
               <div class="stack-list top-performer-list" id="topReels"></div>
             </article>
-
-            <article class="panel" id="pinnedInsightsSection">
-              <div class="panel-head">
-                <div>
-                  <h2>Needs a rethink</h2>
-                  <p class="rail-copy">Lowest views in range</p>
-                </div>
-              </div>
-              <div class="stack-list top-performer-list" id="pinnedInsights"></div>
-            </article>
           </div>
 
           <article class="panel" id="insightsSection">
@@ -273,10 +263,10 @@
                 <span>Style</span>
                 <span>Pillar</span>
                 <span>Views</span>
-                <span>Retention</span>
+                <span>Likes</span>
+                <span>Comments</span>
                 <span>Eng. Rate</span>
-                <span>Saves</span>
-                <span>Followers +</span>
+                <span>Watch time</span>
               </div>
               <div class="posts-table-body" id="allPostsTable"></div>
             </div>
@@ -412,6 +402,7 @@
               <div class="message-list assistant-reference-messages" id="messages"></div>
 
               <div class="assistant-reference-actions">
+                <button class="assistant-chip solid" data-suggestion="Build my next post from my saved transcripts"><span>↗</span>Next post</button>
                 <button class="assistant-chip solid" data-suggestion="Build me a weekly plan from my current analytics"><span>◫</span>Weekly plan</button>
                 <button class="assistant-chip solid" data-suggestion="Give me a monthly summary from the current dashboard"><span>╲╱</span>Monthly summary</button>
                 <button class="assistant-chip solid" data-suggestion="Give me 20 content ideas based on my current hooks and pillars"><span>◌</span>20 ideas</button>
@@ -703,6 +694,6 @@
         </div>
       </article>
     </div>
-    <script type="module" src="/app.js?v=20260731-jump-fix"></script>
+    <script type="module" src="/app.js?v=20260804-thumbfallback1"></script>
   </body>
 </html>

@@ -683,6 +683,183 @@ body[data-view="admin"] .filters {
   margin: 0;
 }
 
+.assistant-answer-section {
+  margin: 14px 0 0;
+  padding: 14px 14px 12px;
+  border: 1px solid rgba(23, 19, 13, 0.08);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(188, 141, 42, 0.08), transparent 36%),
+    rgba(255, 252, 246, 0.72);
+}
+
+.assistant-answer-section:first-child {
+  margin-top: 0;
+}
+
+.assistant-answer-section h4 {
+  margin: 0 0 10px;
+  color: #1d1914;
+  font-size: 14px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.assistant-answer-section h4::first-letter {
+  color: var(--gold-strong);
+}
+
+.assistant-labeled-line {
+  display: grid;
+  gap: 4px;
+}
+
+.assistant-labeled-line strong {
+  color: #8b6a2f;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.assistant-labeled-line span {
+  color: #41392f;
+}
+
+.message-body blockquote {
+  margin: 10px 0 0;
+  padding: 14px 16px;
+  border-left: 4px solid var(--gold);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(188, 141, 42, 0.16), rgba(255, 255, 255, 0.82));
+  color: #221c15;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+}
+
+.assistant-beat {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 12px 13px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(23, 19, 13, 0.08);
+}
+
+.assistant-beat strong {
+  color: #2f5c47;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.assistant-beat span {
+  color: #41392f;
+  line-height: 1.55;
+}
+
+.message-body code {
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(23, 19, 13, 0.07);
+  color: #8b6a2f;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.92em;
+}
+
+.message-body em {
+  color: #2d7550;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.message-grounding {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.grounding-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.grounding-pill.transcript {
+  background: rgba(70, 132, 92, 0.12);
+  border: 1px solid rgba(70, 132, 92, 0.18);
+  color: #2d7550;
+}
+
+.grounding-pill.analytics {
+  background: rgba(169, 125, 38, 0.1);
+  border: 1px solid rgba(169, 125, 38, 0.14);
+  color: var(--gold-strong);
+}
+
+.grounding-copy {
+  font-size: 12px;
+  color: #7c7365;
+}
+
+.message-sources {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(23, 19, 13, 0.08);
+}
+
+.message-sources-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8b6a2f;
+  margin-bottom: 10px;
+}
+
+.message-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.message-source-chip {
+  min-width: 0;
+  max-width: min(260px, 100%);
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border-radius: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(23, 19, 13, 0.08);
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(246, 240, 230, 0.9));
+  color: #3a3025;
+}
+
+.message-source-chip strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.message-source-chip span {
+  font-size: 11px;
+  color: #7c7365;
+}
+
+.message-source-chip:hover {
+  border-color: rgba(169, 125, 38, 0.24);
+  transform: translateY(-1px);
+}
+
 .citations {
   display: flex;
   gap: 8px;
@@ -4094,6 +4271,11 @@ body[data-view="competitors"] .competitor-open-hint:hover {
   color: var(--sage);
 }
 
+.news-fit.archive {
+  background: rgba(97, 90, 79, 0.1);
+  color: var(--muted);
+}
+
 .news-tags {
   display: flex;
   gap: 8px;
@@ -6583,4 +6765,8 @@ body[data-view="performance"] .post-row {
   .sidebar .nav-item span:not(.nav-icon) { display: block !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .content, body[data-view="performance"] .content, body[data-view="competitors"] .content, body[data-view="news"] .content, body[data-view="assistant"] .content { width: 100% !important; max-width: none !important; padding: 12px 12px calc(92px + env(safe-area-inset-bottom)) !important; }
   .performance-kpi-grid, body[data-view="performance"] .performance-kpi-grid, .reference-two-col, .performers-layout, .assistant-layout, .assistant-reference-layout, .panel-grid, .panel-grid-wide, .detail-grid { grid-template-columns: 1fr !important; }
+  body[data-view="assistant"] .assistant-answer-section { padding: 12px !important; border-radius: 15px !important; }
+  body[data-view="assistant"] .assistant-answer-section h4 { font-size: 13px !important; }
+  body[data-view="assistant"] .message-body blockquote { padding: 12px !important; font-size: 14px !important; }
+  body[data-view="assistant"] .assistant-beat { padding: 10px !important; border-radius: 13px !important; }
 }

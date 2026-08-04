@@ -28,8 +28,10 @@ const state = {
   activeCompetitorPostId: "",
   modalReturnTarget: null,
   modalReturnFocus: null,
+  dashboardRequestId: 0,
   competitorCompareHandle: "",
   comparisonGroup: "hook",
+  trendMetric: "views",
   newsCategory: "All",
   modalScrollPosition: { x: 0, y: 0 },
   userRole: "",
@@ -74,7 +76,7 @@ const viewChrome = {
     topbarEyebrow: "AI content assistant",
     topbarTitle: "Grounded analytics copilot.",
     heroEyebrow: "AI content assistant",
-    prototype: "Prototype · simulated data",
+    prototype: "Live transcript assistant",
   },
   admin: {
     topbarEyebrow: "Admin",
@@ -115,6 +117,7 @@ const $ = (selector) => document.querySelector(selector);
 const isPhoneViewport = () => window.matchMedia("(max-width: 760px), (pointer: coarse) and (max-width: 1100px)").matches;
 const adminTokenStorageKey = "creator-os-admin-token";
 const authRoleStorageKey = "creator-os-role";
+const activeViewStorageKey = "creator-os-active-view";
 const viewerAccessCode = "123456";
 const adminAccessCode = "654321";
 const escapeHtml = (value) =>
@@ -202,9 +205,22 @@ function renderChrome() {
 function defaultAssistantMessage() {
   return {
     role: "assistant",
-    text: "Hey Arjun. I'm plugged into all 119 reels, your competitor tracker, and 210 days of trends. Ask me anything or start with a quick action above.",
+    text: "I've analyzed every reel you've ever posted and your competitors' content. Ask me anything about your content, strategy, hooks, or what's working.",
     citations: [],
+    sourceReels: [],
+    grounding: "analytics",
     tone: "ready",
+  };
+}
+
+function normalizeDefaultAssistantCopy(message) {
+  if (message?.role !== "assistant") return message;
+  if (!/^Hey Arjun\. I'm plugged into/i.test(String(message.text || ""))) return message;
+  return {
+    ...message,
+    text: defaultAssistantMessage().text,
+    grounding: message.grounding || "analytics",
+    tone: message.tone || "ready",
   };
 }
 
@@ -263,15 +279,18 @@ async function restoreAssistantState() {
   const savedPins = Array.isArray(saved.pinned) ? saved.pinned : [];
   state.pinnedMessages = savedPins;
   if (savedThreads.length) {
-    state.threads = savedThreads;
+    state.threads = savedThreads.map((thread) => ({
+      ...thread,
+      messages: Array.isArray(thread.messages) ? thread.messages.map(normalizeDefaultAssistantCopy) : [defaultAssistantMessage()],
+    }));
     state.currentThreadId = savedThreads[0].id;
-    state.messages = savedThreads[0].messages?.length ? savedThreads[0].messages : [defaultAssistantMessage()];
+    state.messages = state.threads[0].messages?.length ? state.threads[0].messages.map(normalizeDefaultAssistantCopy) : [defaultAssistantMessage()];
     return;
   }
   const freshThread = createThread();
   state.threads = [freshThread];
   state.currentThreadId = freshThread.id;
-  state.messages = freshThread.messages.map((message) => ({ ...message }));
+  state.messages = freshThread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
   await persistAssistantState();
 }
 
@@ -310,6 +329,7 @@ function openView(viewId, options = {}) {
   const alreadyOnView = state.activeView === viewId;
   const skipPageScroll = Boolean(options.skipPageScroll);
   state.activeView = viewId;
+  window.sessionStorage.setItem(activeViewStorageKey, viewId);
   document.querySelectorAll(".view").forEach((view) => {
     view.classList.toggle("active", view.dataset.view === viewId);
   });
@@ -374,7 +394,7 @@ function setPresetRange(range) {
   delete state.filters.from;
   delete state.filters.to;
   syncRangeToolbar();
-  return fetchDashboard();
+  return fetchDashboard({ preserveScroll: true });
 }
 
 function applyCustomRange() {
@@ -423,10 +443,32 @@ function fillExplorerSelect(selector, values, active, fallbackLabel) {
   element.value = normalized.includes(active) ? active : "all";
 }
 
+function transcriptTitleCandidate(post, fallback = "") {
+  const candidates = [
+    post?.captionHeadline,
+    post?.caption,
+    post?.transcript,
+    ...(Array.isArray(post?.timestampedTranscript)
+      ? post.timestampedTranscript.map((segment) => segment?.text)
+      : []),
+    post?.hook,
+    fallback,
+  ];
+
+  for (const candidate of candidates) {
+    const cleaned = String(candidate || "")
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  return String(fallback || "").trim();
+}
+
 function postDisplayTitle(post, fallback = "Reel breakdown") {
   const title = String(post?.title || "").trim();
-  if (title && !/^imported reel$/i.test(title)) return title;
-  return shortText(post?.caption || post?.transcript || post?.hook || fallback, fallback, 86);
+  if (title && !/^(?:untitled reel|imported reel|reel|video)$/i.test(title)) return title;
+  return shortText(transcriptTitleCandidate(post, fallback), fallback, 86);
 }
 
 function initialsForPost(post) {
@@ -440,7 +482,7 @@ function initialsForPost(post) {
 function postThumbnailMarkup(post, className = "post-thumb") {
   const thumbnailUrl = String(post?.thumbnailUrl || "").trim();
   const thumbnailSource = post?.id && thumbnailUrl
-    ? `/api/reel-thumbnail?id=${encodeURIComponent(post.id)}&src=${encodeURIComponent(thumbnailUrl)}`
+    ? `/api/reel-thumbnail?id=${encodeURIComponent(post.id)}&src=${encodeURIComponent(thumbnailUrl)}&v=20260804-thumbfallback1`
     : "";
   return `<span class="${className} post-thumb-media">
     ${thumbnailSource ? `<img src="${thumbnailSource}" alt="" loading="lazy" onerror="this.hidden=true; this.nextElementSibling.hidden=false;" />` : ""}
@@ -725,7 +767,7 @@ function postAnalysisState(post) {
 
 function postStatusText(post) {
   if (hasRealTranscriptContent(post)) {
-    return `Transcript ready${post.analysisUpdatedAt ? ` • updated ${new Date(post.analysisUpdatedAt).toLocaleString("en-IN", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}`;
+    return `Analysis done${post.analysisUpdatedAt ? ` • updated ${new Date(post.analysisUpdatedAt).toLocaleString("en-IN", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}`;
   }
   if (post.analysisStatus === "ready") {
     return "AI scene notes saved, but no real transcript is attached yet.";
@@ -771,7 +813,53 @@ function competitorHookLabel(competitor) {
   return "Question Hook";
 }
 
+function competitorAngleLabel(competitor) {
+  const angle = String(competitor?.angle || "").trim();
+  if (angle && !/^(imported competitor|unknown|unknown angle)$/i.test(angle)) return angle;
+  const reels = Array.isArray(competitor?.reels) ? competitor.reels : [];
+  const dominantPillar = (() => {
+    const counts = new Map();
+    reels.forEach((reel) => {
+      const key = normalizePillarLabel(reel?.pillar, "");
+      if (!key) return;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || "";
+  })();
+  if (dominantPillar) return dominantPillar;
+  if (metricHasSignal(competitor?.bestFormat) && !/unknown/i.test(String(competitor.bestFormat))) {
+    return `${competitor.bestFormat} creator`;
+  }
+  return "Imported creator signals";
+}
+
+function competitorMetricValue(value, fallback = "N/A") {
+  return metricHasSignal(value) ? String(value).trim() : fallback;
+}
+
+function competitorMetricSubcopy(competitor, kind) {
+  if (kind === "followers") {
+    return metricHasSignal(competitor?.followersLabel)
+      ? "followers"
+      : `${Number(competitor?.importedPosts || 0)} imported reels`;
+  }
+  if (kind === "engagement") {
+    return metricHasSignal(competitor?.engagementRateLabel)
+      ? "avg engagement"
+      : `${competitor?.avgViewsLabel || "0"} avg views`;
+  }
+  if (kind === "momentum") {
+    return metricHasSignal(competitor?.monthlyGrowthLabel)
+      ? "content momentum"
+      : `${competitorPostsPerWeek(competitor)}/week cadence`;
+  }
+  return "";
+}
+
 function competitorFastestContent(competitor) {
+  if (String(competitor?.topPostTitle || "").trim()) return shortText(competitor.topPostTitle, "", 44);
+  const topReel = Array.isArray(competitor?.reels) ? [...competitor.reels].sort((left, right) => Number(right.views || 0) - Number(left.views || 0))[0] : null;
+  if (topReel) return shortText(postDisplayTitle(topReel, ""), "", 44);
   if (/podcast/i.test(competitor.bestFormat)) return "Podcast clip moments";
   if (/skit|character/i.test(competitor.bestFormat)) return "Character-led explainers";
   if (/myth|finance/i.test(competitor.bestFormat)) return "Save-heavy myth-busting";
@@ -1307,7 +1395,7 @@ async function openCompetitorReelDetail(postId) {
     : (hasRealTranscript ? buildFallbackSceneTimeline(post) : []);
   const statusLabel = hasMedia
     ? hasRealTranscript
-      ? "Transcript ready"
+      ? "Analysis done"
       : "Media URL found"
     : "No media URL";
 
@@ -1331,7 +1419,7 @@ async function openCompetitorReelDetail(postId) {
 
   $("#competitorDetailStatus").textContent = hasMedia
     ? hasRealTranscript
-      ? `Transcript ready for @${post.sourceHandle || competitor.canonicalHandle || "competitor"}.`
+      ? `Analysis done for @${post.sourceHandle || competitor.canonicalHandle || "competitor"}.`
       : scriptLines.length
         ? "Transcript is not available yet for this reel. Caption/summary is shown below. Run analysis if media URL is present."
         : "Transcript is not available yet for this reel. Run analysis if media URL is present."
@@ -1506,7 +1594,7 @@ function renderPostExplorer() {
           ${postThumbnailMarkup(post)}
           <span>
             <strong>${escapeHtml(postDisplayTitle(post))}</strong>
-            ${hasTranscriptContent(post) ? `<span class="post-ready-badge">Transcript ready</span>` : ""}
+            ${hasTranscriptContent(post) ? `<span class="post-ready-badge">Analysis done</span>` : ""}
             <small>${escapeHtml(post.postedAtLabel)} · ${escapeHtml(post.watchTimeLabel || "")} · ${escapeHtml(shortText(post.caption || post.transcript, "", 56))}</small>
           </span>
         </span>
@@ -1516,10 +1604,10 @@ function renderPostExplorer() {
         <span class="post-cell" data-label="Style"><span class="post-pill">${escapeHtml(post.format)}</span></span>
         <span class="post-cell" data-label="Pillar"><span class="post-pill">${escapeHtml(normalizePillarLabel(post.pillar, "General"))}</span></span>
         <span class="post-cell metric-stack" data-label="Views"><span class="metric-bar"><i style="width:${Math.max(6, Math.min(100, Number(post.views || 0) / Math.max(...posts.map((item) => Number(item.views || 0)), 1) * 100))}%"></i></span><strong>${escapeHtml(post.viewsLabel)}</strong></span>
-        <span class="post-cell metric-stack" data-label="Retention"><strong>${escapeHtml(post.retentionLabel)}</strong></span>
+        <span class="post-cell metric-stack" data-label="Likes"><strong>${escapeHtml(post.likesLabel)}</strong></span>
+        <span class="post-cell metric-stack" data-label="Comments"><strong>${escapeHtml(post.commentsLabel)}</strong></span>
         <span class="post-cell metric-stack" data-label="Engagement"><strong>${escapeHtml(post.engagementRateLabel)}</strong></span>
-        <span class="post-cell metric-stack" data-label="Saves"><strong>${escapeHtml(post.savesLabel)}</strong></span>
-        <span class="post-cell metric-stack positive" data-label="Followers"><strong>+${escapeHtml(post.followersLabel)}</strong></span>
+        <span class="post-cell metric-stack" data-label="Watch time"><strong>${escapeHtml(post.watchTimeLabel)}</strong></span>
       </button>
     `)
     .join("") || emptyMarkup("No posts match the current explorer filters.");
@@ -1657,7 +1745,44 @@ function renderMessages() {
               <strong>${message.role === "assistant" ? "Advantage Copilot" : "You"}</strong>
               <span>${message.role === "assistant" ? "Connected to your analytics" : index === state.messages.length - 1 ? "Latest" : "Saved turn"}</span>
             </div>
+            ${
+              message.role === "assistant" && message.tone !== "thinking"
+                ? `
+                  <div class="message-grounding">
+                    <span class="grounding-pill ${message.grounding === "transcript" ? "transcript" : "analytics"}">
+                      ${message.grounding === "transcript" ? "Transcript-backed" : "Analytics-backed"}
+                    </span>
+                    ${
+                      message.sourceReels?.length
+                        ? `<span class="grounding-copy">Using ${message.sourceReels.length} saved reel${message.sourceReels.length > 1 ? "s" : ""}</span>`
+                        : ""
+                    }
+                  </div>
+                `
+                : ""
+            }
             <div class="message-body">${formatMessageBody(message.text, message.tone)}</div>
+            ${
+              message.role === "assistant" && message.sourceReels?.length
+                ? `
+                  <div class="message-sources">
+                    <div class="message-sources-label">Source reels used</div>
+                    <div class="message-source-list">
+                      ${message.sourceReels
+                        .map(
+                          (reel) => `
+                            <button class="message-source-chip" type="button" data-source-reel="${escapeHtml(reel.id || "")}">
+                              <strong>${escapeHtml(postDisplayTitle(reel, "Source reel"))}</strong>
+                              <span>${escapeHtml(reel.hook || "Hook")} · ${escapeHtml(reel.pillar || "General")}</span>
+                            </button>
+                          `,
+                        )
+                        .join("")}
+                    </div>
+                  </div>
+                `
+                : ""
+            }
           ${
             message.citations?.length
               ? `<div class="citations">${message.citations
@@ -1689,6 +1814,15 @@ function renderMessages() {
       }, 20);
     };
   });
+  document.querySelectorAll("[data-source-reel]").forEach((button) => {
+    button.onclick = () => {
+      const reelId = button.dataset.sourceReel;
+      if (!reelId) return;
+      const reel = (state.dashboard?.posts || []).find((item) => String(item.id) === String(reelId));
+      if (!reel) return;
+      openPostModal(String(reel.id));
+    };
+  });
   document.querySelectorAll("[data-pin-message]").forEach((button) => {
     button.onclick = () => {
       const message = state.messages[Number(button.dataset.pinMessage)];
@@ -1709,7 +1843,10 @@ function renderMessages() {
 }
 
 function formatInline(text) {
-  return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  return escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
 function formatMessageBody(text, tone) {
@@ -1726,6 +1863,7 @@ function formatMessageBody(text, tone) {
   const blocks = [];
   let listItems = [];
   let listType = "";
+  let sectionOpen = false;
 
   const flushList = () => {
     if (!listItems.length) return;
@@ -1734,9 +1872,43 @@ function formatMessageBody(text, tone) {
     listType = "";
   };
 
+  const closeSection = () => {
+    if (!sectionOpen) return;
+    flushList();
+    blocks.push("</section>");
+    sectionOpen = false;
+  };
+
+  const openSection = (title) => {
+    closeSection();
+    blocks.push(`<section class="assistant-answer-section"><h4>${formatInline(title)}</h4>`);
+    sectionOpen = true;
+  };
+
   lines.forEach((line) => {
-    if (!line.trim()) {
+    const trimmed = line.trim();
+    if (!trimmed) {
       flushList();
+      return;
+    }
+    if (/^-{3,}$/.test(trimmed)) {
+      flushList();
+      return;
+    }
+    const headingMatch = trimmed.match(/^#{1,4}\s+(.+)$/) || trimmed.match(/^\*\*(\d+\.\s+[^*]+)\*\*$/);
+    if (headingMatch) {
+      openSection(headingMatch[1].replace(/\*\*/g, ""));
+      return;
+    }
+    if (/^>\s+/.test(trimmed)) {
+      flushList();
+      blocks.push(`<blockquote>${formatInline(trimmed.replace(/^>\s+/, ""))}</blockquote>`);
+      return;
+    }
+    const beatMatch = trimmed.match(/^(Beat\s+\d+\s*\([^)]+\):?)(.*)$/i);
+    if (beatMatch) {
+      flushList();
+      blocks.push(`<div class="assistant-beat"><strong>${formatInline(beatMatch[1])}</strong>${beatMatch[2] ? `<span>${formatInline(beatMatch[2].trim())}</span>` : ""}</div>`);
       return;
     }
     if (/^[-*]\s+/.test(line)) {
@@ -1754,10 +1926,16 @@ function formatMessageBody(text, tone) {
       return;
     }
     flushList();
-    blocks.push(`<p>${formatInline(line)}</p>`);
+    const labelMatch = trimmed.match(/^([A-Z][A-Za-z /&-]{2,28}):\s+(.+)$/);
+    if (labelMatch) {
+      blocks.push(`<p class="assistant-labeled-line"><strong>${formatInline(labelMatch[1])}</strong><span>${formatInline(labelMatch[2])}</span></p>`);
+      return;
+    }
+    blocks.push(`<p>${formatInline(trimmed)}</p>`);
   });
 
   flushList();
+  closeSection();
   return blocks.join("") || `<p>${formatInline(text)}</p>`;
 }
 
@@ -1782,7 +1960,7 @@ function renderThreadHistory() {
       const thread = state.threads.find((item) => item.id === button.dataset.threadId);
       if (!thread) return;
       state.currentThreadId = thread.id;
-      state.messages = thread.messages.map((message) => ({ ...message }));
+      state.messages = thread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
       renderMessages();
       renderThreadHistory();
     };
@@ -1809,7 +1987,7 @@ function renderPinnedMessages() {
       if (!thread) return;
       openView("assistant");
       state.currentThreadId = thread.id;
-      state.messages = thread.messages.map((message) => ({ ...message }));
+      state.messages = thread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
       renderMessages();
       renderThreadHistory();
     };
@@ -1825,7 +2003,9 @@ function renderPinnedMessages() {
 }
 
 function renderPinnedInsights() {
-  $("#pinnedInsights").innerHTML = state.pinnedMessages.length
+  const pinnedInsights = $("#pinnedInsights");
+  if (!pinnedInsights) return;
+  pinnedInsights.innerHTML = state.pinnedMessages.length
     ? state.pinnedMessages
         .slice(0, 4)
         .map(
@@ -1844,13 +2024,13 @@ function renderPinnedInsights() {
         )
         .join("")
     : emptyMarkup("Pinned assistant takeaways will appear here once you save them from chat.");
-  document.querySelectorAll("#pinnedInsights [data-open-pin-thread]").forEach((button) => {
+  pinnedInsights.querySelectorAll("[data-open-pin-thread]").forEach((button) => {
     button.onclick = () => {
       const thread = state.threads.find((item) => item.id === button.dataset.openPinThread);
       if (!thread) return;
       openView("assistant");
       state.currentThreadId = thread.id;
-      state.messages = thread.messages.map((message) => ({ ...message }));
+      state.messages = thread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
       renderMessages();
       renderThreadHistory();
     };
@@ -1861,7 +2041,7 @@ function startNewChat() {
   const thread = createThread();
   state.threads.unshift(thread);
   state.currentThreadId = thread.id;
-  state.messages = thread.messages.map((message) => ({ ...message }));
+  state.messages = thread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
   persistAssistantState().catch(() => {});
   renderMessages();
   renderThreadHistory();
@@ -1871,9 +2051,19 @@ function emptyMarkup(message) {
   return `<div class="empty-copy">${escapeHtml(message)}</div>`;
 }
 
+function trendPointLabel(key, value) {
+  const number = Number(value || 0);
+  if (key === "watchTime") return `${number.toFixed(1)}s watch time`;
+  if (key === "engagements") return `${number.toLocaleString("en-IN")} engagements`;
+  return number.toLocaleString("en-IN");
+}
+
 function sparklineSvg(points, key, color) {
   if (!points.length) return emptyMarkup("No trend data in this range yet.");
   const values = points.map((point) => Number(point[key] || 0));
+  if (!values.some((value) => value !== 0)) {
+    return emptyMarkup(`No ${key === "watchTime" ? "watch time" : key} trend data in this range yet.`);
+  }
   const min = Math.min(...values);
   const max = Math.max(...values);
   const width = 520;
@@ -1901,7 +2091,7 @@ function sparklineSvg(points, key, color) {
         .map(
           ([x, y], index) =>
             `<circle cx="${x}" cy="${y}" r="4" fill="${color}">
-              <title>${points[index].date}: ${points[index][key]}</title>
+              <title>${points[index].date}: ${trendPointLabel(key, points[index][key])}</title>
             </circle>`,
         )
         .join("")}
@@ -1926,6 +2116,23 @@ function miniSparkline(points, key, color) {
     })
     .join(" ");
   return `<svg viewBox="0 0 ${width} ${height}" class="mini-spark"><path d="${d}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+}
+
+function renderTrendChart(data) {
+  const trendMetric = ["views", "watchTime", "engagements"].includes(state.trendMetric) ? state.trendMetric : "views";
+  const trendColors = {
+    views: "#9bb0d7",
+    watchTime: "#b7a7dc",
+    engagements: "#95b8aa",
+  };
+  document.querySelectorAll("#trendChart .mini-tabs [data-trend-metric]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.trendMetric === trendMetric);
+  });
+  $("#trendCanvas").innerHTML = `
+    <div class="chart-stack single">
+      ${sparklineSvg(data.charts.trend || [], trendMetric, trendColors[trendMetric] || trendColors.views)}
+    </div>
+  `;
 }
 
 function renderBars(containerId, items, metricKey, color) {
@@ -2111,11 +2318,7 @@ function renderDashboard(data) {
     ${tickerBits.map((bit) => `<span>${escapeHtml(bit)}</span>`).join("")}
   `;
 
-  $("#trendCanvas").innerHTML = `
-    <div class="chart-stack single">
-      ${sparklineSvg(data.charts.trend, "views", "#9bb0d7")}
-    </div>
-  `;
+  renderTrendChart(data);
 
   $("#topReels").innerHTML = data.topReels
     .map(
@@ -2135,28 +2338,6 @@ function renderDashboard(data) {
       `,
     )
     .join("") || emptyMarkup("No reels found for the selected filters.");
-
-  const weakestPosts = [...(data.posts || [])]
-    .sort((left, right) => Number(left.views || 0) - Number(right.views || 0))
-    .slice(0, 4);
-  $("#pinnedInsights").innerHTML = weakestPosts
-    .map(
-      (post, index) => `
-        <div class="list-row performer-row">
-          <span class="rank">${index + 1}</span>
-          <span class="performer-thumb cool"></span>
-          <div>
-            <strong>${escapeHtml(postDisplayTitle(post))}</strong>
-            <small>${escapeHtml(post.postedAtLabel)} · <span class="inline-tag">${escapeHtml(post.hook)}</span> <span class="inline-tag warm">${escapeHtml(post.format)}</span></small>
-          </div>
-          <div class="metric">
-            <strong>${escapeHtml(post.viewsLabel)}</strong>
-            <small>${escapeHtml(post.retentionLabel)} ret</small>
-          </div>
-        </div>
-      `,
-    )
-    .join("") || emptyMarkup("Not enough posts for a rethink list yet.");
 
   $("#insights").innerHTML = data.insights
     .map(
@@ -2194,25 +2375,25 @@ function renderDashboard(data) {
         >
           <div class="competitor-identity" data-label="Creator">
             <strong>${escapeHtml(competitor.name)}</strong>
-            <small>${escapeHtml(competitor.angle)}</small>
+            <small>${escapeHtml(competitorAngleLabel(competitor))}</small>
             <span class="competitor-transcript-badge ${transcriptCoverage.isFull ? "complete" : "partial"}" title="${escapeHtml(transcriptCoverage.title)}">
               ${transcriptCoverage.isFull ? "Fully transcribed" : "Transcript"} · ${escapeHtml(transcriptCoverage.label)}
             </span>
           </div>
           <div class="competitor-metric" data-label="Followers">
-            <strong>${escapeHtml(competitor.followersLabel)}</strong>
-            <small>followers</small>
+            <strong>${escapeHtml(competitorMetricValue(competitor.followersLabel))}</strong>
+            <small>${escapeHtml(competitorMetricSubcopy(competitor, "followers"))}</small>
           </div>
           <div class="competitor-metric" data-label="Engagement">
-            <strong>${escapeHtml(competitor.engagementRateLabel)}</strong>
-            <small>avg engagement</small>
+            <strong>${escapeHtml(competitorMetricValue(competitor.engagementRateLabel))}</strong>
+            <small>${escapeHtml(competitorMetricSubcopy(competitor, "engagement"))}</small>
           </div>
           <div class="competitor-metric positive" data-label="Momentum">
-            <strong>${escapeHtml(competitor.monthlyGrowthLabel)}</strong>
-            <small>content momentum</small>
+            <strong>${escapeHtml(competitorMetricValue(competitor.monthlyGrowthLabel, "Tracking"))}</strong>
+            <small>${escapeHtml(competitorMetricSubcopy(competitor, "momentum"))}</small>
           </div>
           <div class="competitor-tag-cell" data-label="Top hook"><span class="post-pill soft">${escapeHtml(competitorHookLabel(competitor))}</span></div>
-          <div class="competitor-tag-cell" data-label="Best format"><span class="post-pill">${escapeHtml(competitor.bestFormat)}</span></div>
+          <div class="competitor-tag-cell" data-label="Best format"><span class="post-pill">${escapeHtml(metricHasSignal(competitor.bestFormat) ? competitor.bestFormat : "Imported")}</span></div>
           <div class="competitor-idea" data-label="Fastest signal">${escapeHtml(competitorFastestContent(competitor))}</div>
           <button
             class="competitor-open-hint competitor-open-action"
@@ -2297,7 +2478,7 @@ function renderDashboard(data) {
   const visibleFeaturedStory = visibleNews[0];
   const remainingStories = visibleNews.slice(1);
   $("#newsSyncStrip").innerHTML = `
-    <span class="sync-badge">Updated ${escapeHtml(data.header.syncLabel.replace("Store updated ", ""))}</span>
+    <span class="sync-badge">${escapeHtml(data.dataSources?.news?.label || `Updated ${data.header.syncLabel.replace("Store updated ", "")}`)}</span>
     <button class="mini-action" id="refreshNewsAction" type="button">Refresh</button>
   `;
   $("#featuredNewsPanel").innerHTML = visibleFeaturedStory
@@ -2305,6 +2486,7 @@ function renderDashboard(data) {
       <div class="featured-news-meta">
         <span>${escapeHtml(visibleFeaturedStory.source)}</span>
         <span>${escapeHtml(visibleFeaturedStory.age)}</span>
+        ${visibleFeaturedStory.isArchived ? `<span class="news-fit archive">Archive</span>` : ""}
         <span class="news-fit ${recommendationToneClass(visibleFeaturedStory.recommendationLabel)}">${escapeHtml(visibleFeaturedStory.recommendationLabel)}</span>
       </div>
       <h2 class="featured-news-title">${escapeHtml(visibleFeaturedStory.headline)}</h2>
@@ -2317,7 +2499,7 @@ function renderDashboard(data) {
         ${visibleFeaturedStory.url ? `<a class="story-source-link" href="${escapeHtml(visibleFeaturedStory.url)}" target="_blank" rel="noreferrer">Source ↗</a>` : ""}
       </div>
     `
-    : emptyMarkup(`No ${state.newsCategory === "All" ? "" : `${state.newsCategory.toLowerCase()} `}stories are available right now.`);
+    : emptyMarkup(`No ${state.newsCategory === "All" ? "" : `${state.newsCategory.toLowerCase()} `}recent stories are available right now.`);
 
   $("#news").innerHTML = remainingStories
     .map(
@@ -2328,7 +2510,7 @@ function renderDashboard(data) {
               <span>${escapeHtml(story.source)}</span>
               <span>${escapeHtml(story.age)}</span>
             </div>
-            ${story.topic ? `<span class="news-topic-pill">${escapeHtml(story.topic)}</span>` : ""}
+            ${story.isArchived ? `<span class="news-topic-pill">Archive</span>` : (story.topic ? `<span class="news-topic-pill">${escapeHtml(story.topic)}</span>` : "")}
           </div>
           <span class="news-kicker ${recommendationToneClass(story.recommendationLabel)}">${escapeHtml(story.recommendationLabel || "News signal")}</span>
           <strong>${escapeHtml(story.headline)}</strong>
@@ -2343,7 +2525,7 @@ function renderDashboard(data) {
         </article>
       `,
     )
-    .join("") || emptyMarkup("No news stories available right now.");
+    .join("") || emptyMarkup("No recent news stories available right now.");
 
   document.querySelectorAll("[data-news-category]").forEach((button) => {
     button.onclick = () => {
@@ -2364,7 +2546,7 @@ function renderDashboard(data) {
       });
     };
   });
-  $("#refreshNewsAction").onclick = () => fetchDashboard();
+  $("#refreshNewsAction").onclick = () => refreshNewsRadar();
 
   $("#suggestions").innerHTML = data.suggestions
     .map(
@@ -2396,7 +2578,7 @@ function renderDashboard(data) {
   renderPinnedInsights();
   renderChrome();
   renderNav();
-  $("#aiMode").textContent = "Connected to your analytics · simulated";
+  $("#aiMode").textContent = `Connected to your analytics · ${state.aiMode}`;
 }
 
 function snapshotScrollPosition() {
@@ -2443,16 +2625,21 @@ function preserveSectionViewportPosition(selector, render) {
 
 async function fetchDashboard(options = {}) {
   const scrollSnapshot = options.preserveScroll ? snapshotScrollPosition() : null;
+  const requestId = ++state.dashboardRequestId;
   state.loadingDashboard = true;
   document.body.classList.add("dashboard-loading");
   try {
     const response = await fetch(`/api/dashboard?${queryString()}`);
     if (!response.ok) throw new Error("Dashboard failed to load");
-    renderDashboard(await response.json());
+    const data = await response.json();
+    if (requestId !== state.dashboardRequestId) return;
+    renderDashboard(data);
     restoreScrollSnapshot(scrollSnapshot);
   } finally {
-    state.loadingDashboard = false;
-    document.body.classList.remove("dashboard-loading");
+    if (requestId === state.dashboardRequestId) {
+      state.loadingDashboard = false;
+      document.body.classList.remove("dashboard-loading");
+    }
   }
 }
 
@@ -2473,7 +2660,7 @@ async function sendMessage(prompt, options = {}) {
   renderMessages();
   renderThreadHistory();
   $("#chatInput").value = "";
-  state.messages.push({ role: "assistant", text: "Thinking over your dashboard...", citations: [], tone: "thinking" });
+  state.messages.push({ role: "assistant", text: "Thinking over your dashboard...", citations: [], sourceReels: [], grounding: "analytics", tone: "thinking" });
   renderMessages();
 
   try {
@@ -2488,10 +2675,17 @@ async function sendMessage(prompt, options = {}) {
     });
     const result = await response.json();
     state.messages.pop();
-    state.messages.push({ role: "assistant", text: result.answer, citations: result.citations || [], tone: "answer" });
+    state.messages.push({
+      role: "assistant",
+      text: result.answer,
+      citations: result.citations || [],
+      sourceReels: Array.isArray(result.sourceReels) ? result.sourceReels : [],
+      grounding: result.grounding || "analytics",
+      tone: "answer"
+    });
   } catch {
     state.messages.pop();
-    state.messages.push({ role: "assistant", text: "The analytics assistant is unavailable right now.", citations: [], tone: "error" });
+    state.messages.push({ role: "assistant", text: "The analytics assistant is unavailable right now.", citations: [], sourceReels: [], grounding: "analytics", tone: "error" });
   }
   await syncCurrentThread();
   renderMessages();
@@ -2707,7 +2901,7 @@ async function runLiveNewsImport() {
       "Content-Type": "application/json",
       "x-admin-token": token,
     },
-    body: JSON.stringify({ perQuery: 4 }),
+    body: JSON.stringify({ lookbackDays: 14, perQuery: 15 }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Live news import failed");
@@ -2715,6 +2909,36 @@ async function runLiveNewsImport() {
   $("#adminStatus").textContent = `Live news import complete. Stories: ${result.importedCounts.news}. Queries: ${(result.queries || []).join(", ")}.`;
   await loadStore();
   await fetchDashboard();
+}
+
+async function refreshNewsRadar() {
+  const token = window.localStorage.getItem(adminTokenStorageKey) || "";
+  const button = $("#refreshNewsAction");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Refreshing...";
+  }
+  try {
+    const endpoint = token ? "/api/admin/news/import-live" : "/api/news/import-live";
+    const headers = token
+      ? { "Content-Type": "application/json", "x-admin-token": token }
+      : { "Content-Type": "application/json" };
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ lookbackDays: 14, perQuery: 15 }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Live news refresh failed");
+    state.store = result.store || state.store;
+    await loadStore();
+    await fetchDashboard({ preserveScroll: true });
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Refresh";
+    }
+  }
 }
 
 async function enrichReels() {
@@ -2822,7 +3046,7 @@ async function bootApp() {
     const freshThread = createThread();
     state.threads = [freshThread];
     state.currentThreadId = freshThread.id;
-    state.messages = freshThread.messages.map((message) => ({ ...message }));
+    state.messages = freshThread.messages.map((message) => normalizeDefaultAssistantCopy({ ...message }));
   }
   await fetchDashboard();
   renderChrome();
@@ -2865,6 +3089,15 @@ function restoreUserRole() {
   return state.userRole;
 }
 
+function restoreActiveView() {
+  const savedView = window.sessionStorage.getItem(activeViewStorageKey);
+  const allowedViews = new Set(navItems.map((item) => item.id));
+  state.activeView = allowedViews.has(savedView) ? savedView : "performance";
+  if (state.activeView === "admin" && !isAdminUser()) {
+    state.activeView = "performance";
+  }
+}
+
 function persistUserRole(role) {
   state.userRole = role;
   window.sessionStorage.setItem(authRoleStorageKey, role);
@@ -2890,9 +3123,10 @@ function wireAuthGate() {
 
     error.hidden = true;
     persistUserRole(role);
-    showAppShell();
+    restoreActiveView();
     try {
       await bootApp();
+      showAppShell();
       requestAnimationFrame(() => $("#chatInput")?.blur());
     } catch (bootError) {
       console.error("Dashboard boot failed.", bootError);
@@ -2927,6 +3161,14 @@ document.querySelectorAll("#hookChart .mini-tabs button").forEach((button) => {
   button.addEventListener("click", (event) => {
     event.preventDefault();
     renderComparisonGroup(state.dashboard, button.dataset.comparisonGroup || "hook");
+  });
+});
+
+document.querySelectorAll("#trendChart .mini-tabs [data-trend-metric]").forEach((button) => {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    state.trendMetric = button.dataset.trendMetric || "views";
+    if (state.dashboard) renderTrendChart(state.dashboard);
   });
 });
 
@@ -3102,9 +3344,8 @@ $("#enrichReels").onclick = async () => {
       return;
     }
 
-    if (state.activeView === "admin" && !isAdminUser()) {
-      state.activeView = "performance";
-    }
+    restoreActiveView();
+    renderChrome();
     await bootApp();
     showAppShell();
     clearAppPreload();

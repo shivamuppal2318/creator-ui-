@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -33,6 +33,7 @@ function loadEnvFile(filePath) {
 loadEnvFile(envPath);
 
 const dataDir = path.join(root, "data");
+const thumbnailCacheDir = path.join(dataDir, "thumbnails");
 const storePath = path.join(dataDir, "store.json");
 const sqlitePath = path.join(dataDir, "creator-os.db");
 const publicFiles = new Set(["index.html", "app.css", "app.js"]);
@@ -43,9 +44,9 @@ const adminPassword = process.env.ADMIN_PASSWORD || "";
 const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const openAiTranscriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
-const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+const geminiModel = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const newsLookbackDays = Math.max(1, Math.min(365, Number(process.env.NEWS_LOOKBACK_DAYS || 30)));
-const newsQueryLimit = Math.max(5, Math.min(40, Number(process.env.NEWS_QUERY_LIMIT || 20)));
+const newsQueryLimit = Math.max(5, Math.min(80, Number(process.env.NEWS_QUERY_LIMIT || 60)));
 const apifyAutoImportEnabledEnv = String(process.env.APIFY_AUTO_IMPORT_ENABLED || "").toLowerCase() === "true";
 const apifyAutoImportIntervalMinutesEnv = Math.max(15, Number(process.env.APIFY_AUTO_IMPORT_INTERVAL_MINUTES || 180));
 const apifyAutoImportUsernameEnv = String(process.env.APIFY_AUTO_IMPORT_USERNAME || "").replace(/^@/, "").trim().toLowerCase();
@@ -59,6 +60,7 @@ const localWhisperLanguage = process.env.LOCAL_WHISPER_LANGUAGE || "";
 const chatProvider = (process.env.CHAT_PROVIDER || "").toLowerCase();
 const rateBucket = new Map();
 const dashboardDecorCache = new Map();
+const dashboardDecorInFlight = new Set();
 let apifyAutoImportTimer = null;
 let apifyAutoImportInFlight = false;
 const db = new DatabaseSync(sqlitePath);
@@ -228,6 +230,18 @@ function normalizeAssistantMessage(message) {
     role: message?.role === "user" ? "user" : "assistant",
     text: String(message?.text || ""),
     tone: String(message?.tone || ""),
+    grounding: String(message?.grounding || ""),
+    sourceReels: Array.isArray(message?.sourceReels)
+      ? message.sourceReels.slice(0, 8).map((reel) => ({
+          id: String(reel?.id || ""),
+          title: String(reel?.title || "Untitled reel"),
+          hook: String(reel?.hook || ""),
+          pillar: String(reel?.pillar || ""),
+          openingLine: String(reel?.openingLine || ""),
+          postedAt: String(reel?.postedAt || ""),
+          views: Number(reel?.views || 0)
+        }))
+      : [],
     citations: Array.isArray(message?.citations)
       ? message.citations.map((citation) => ({
           label: String(citation?.label || ""),
@@ -732,7 +746,7 @@ function normalizeNews(story) {
 }
 
 function applyFilters(reels, query) {
-  const rangeDays = clamp(Number(query.range || 365), 7, 365);
+  const rangeDays = clamp(Number(query.range || 365), 1, 365);
   const from = query.from ? startOfDay(new Date(query.from)) : daysAgo(rangeDays - 1);
   const to = query.to ? new Date(query.to) : now();
   const pillar = query.pillar && query.pillar !== "all" ? query.pillar : "";
@@ -755,13 +769,15 @@ function dailySeries(reels) {
   reels.forEach((reel) => {
     const key = dateKey(reel.postedAt);
     if (!buckets.has(key)) {
-      buckets.set(key, { date: key, views: 0, saves: 0, followers: 0, retention: 0, posts: 0 });
+      buckets.set(key, { date: key, views: 0, saves: 0, engagements: 0, followers: 0, retention: 0, watchTime: 0, posts: 0 });
     }
     const bucket = buckets.get(key);
     bucket.views += reel.views;
     bucket.saves += reel.saves;
+    bucket.engagements += Number(reel.likes || 0) + Number(reel.comments || 0) + Number(reel.shares || 0) + Number(reel.saves || 0);
     bucket.followers += reel.followersGained;
     bucket.retention += reel.retention;
+    bucket.watchTime += reel.watchTime;
     bucket.posts += 1;
   });
   return [...buckets.values()]
@@ -1338,6 +1354,51 @@ async function generateDashboardDecorations(store, dashboard) {
   return normalized;
 }
 
+function applyDashboardDecorations(dashboard, decorations) {
+  if (!decorations) return dashboard;
+  const news = dashboard.news.map((story) => {
+    const blueprint = decorations.blueprints.get(String(story.id));
+    if (!blueprint) return story;
+    return {
+      ...story,
+      reelBlueprint: {
+        angle: blueprint.angle || story.reelBlueprint?.angle || story.summary,
+        hooks: blueprint.hooks?.length ? blueprint.hooks : story.reelBlueprint?.hooks || [],
+        structure: blueprint.structure?.length ? blueprint.structure : story.reelBlueprint?.structure || [],
+        cta: blueprint.cta || story.reelBlueprint?.cta || "Follow for more niche-specific business and creator signals."
+      }
+    };
+  });
+  return {
+    ...dashboard,
+    header: {
+      ...dashboard.header,
+      title: decorations.header?.title || dashboard.header.title,
+      subtitle: decorations.header?.subtitle || dashboard.header.subtitle
+    },
+    insights: decorations.insights?.length
+      ? decorations.insights.map((item, index) => ({
+          ...dashboard.insights[index],
+          ...item,
+          citation: dashboard.insights[index]?.citation || { view: "performance", section: "insights", label: "AI insights" }
+        }))
+      : dashboard.insights,
+    suggestions: decorations.suggestions?.length ? decorations.suggestions : dashboard.suggestions,
+    news
+  };
+}
+
+function primeDashboardDecorations(store, dashboard) {
+  const cacheKey = dashboardDecorCacheKey(store, dashboard);
+  if (dashboardDecorInFlight.has(cacheKey)) return;
+  dashboardDecorInFlight.add(cacheKey);
+  generateDashboardDecorations(store, dashboard)
+    .catch(() => null)
+    .finally(() => {
+      dashboardDecorInFlight.delete(cacheKey);
+    });
+}
+
 function competitorMatchKeys(profile) {
   return new Set(
     [
@@ -1406,10 +1467,11 @@ function winsterConfig(store) {
 
 function newsConfig(store) {
   const config = store.integrations?.news || {};
+  const savedQueries = Array.isArray(config.queries) ? config.queries.map((query) => String(query || "").trim()).filter(Boolean) : [];
   return {
     lastLiveRunAt: String(config.lastLiveRunAt || ""),
     lastSource: String(config.lastSource || ""),
-    queries: Array.isArray(config.queries) ? config.queries.map((query) => String(query || "")) : [],
+    queries: savedQueries.length >= 10 ? savedQueries : [],
     lookbackDays: Number(config.lookbackDays || newsLookbackDays)
   };
 }
@@ -1423,6 +1485,7 @@ function isRecentNewsStory(story, lookbackDays = newsLookbackDays) {
 function decodeHtml(value) {
   return String(value || "")
     .replaceAll("&amp;", "&")
+    .replaceAll("&nbsp;", " ")
     .replaceAll("&quot;", '"')
     .replaceAll("&#39;", "'")
     .replaceAll("&apos;", "'")
@@ -1455,10 +1518,14 @@ function buildLiveNewsQueries(store) {
   const niche = String(store.creator?.niche || "").trim();
   const nicheParts = niche.split(",").map((part) => part.trim()).filter(Boolean);
   const creatorName = String(store.creator?.name || "").trim();
+  const competitorNames = (store.competitorProfiles || [])
+    .map((profile) => String(profile?.name || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
   const competitorAngles = (store.competitorProfiles || [])
     .map((profile) => {
       const angle = String(profile?.angle || "").trim();
-      if (!angle) return "";
+      if (!angle || /^(imported competitor|unknown|general)$/i.test(angle)) return "";
       if (/finance/i.test(angle)) return "personal finance India creators";
       if (/founder|interview/i.test(angle)) return "Indian founders creator economy";
       if (/growth/i.test(angle)) return "career growth India creators";
@@ -1470,6 +1537,7 @@ function buildLiveNewsQueries(store) {
     niche,
     creatorName ? `${creatorName} industry trends India` : "",
     ...nicheParts.filter((part) => !/^business$/i.test(part)),
+    ...competitorNames.map((name) => `${name} creator business India`),
     ...competitorAngles,
     "creator economy India",
     "D2C India",
@@ -1491,7 +1559,31 @@ function buildLiveNewsQueries(store) {
     "direct to consumer India funding",
     "founder branding India",
     "Indian creator startups",
-    "business creators India"
+    "business creators India",
+    "Bharat creators brand strategy",
+    "regional creators India brands",
+    "quick commerce D2C brands India",
+    "ONDC D2C brands India",
+    "startup funding India consumer brands",
+    "VC funding India D2C brands",
+    "Indian creator monetisation platforms",
+    "influencer marketing spends India",
+    "YouTube India creator economy",
+    "Instagram India creator monetisation",
+    "site:inc42.com creator economy India",
+    "site:inc42.com D2C India",
+    "site:yourstory.com creator economy India",
+    "site:yourstory.com D2C India",
+    "site:entrackr.com creator economy India",
+    "site:entrackr.com D2C India",
+    "site:medianama.com creator economy India",
+    "site:afaqs.com influencer marketing India",
+    "site:socialsamosa.com creator economy India",
+    "site:campaignindia.in influencer marketing India",
+    "site:exchange4media.com creator economy India",
+    "site:storyboard18.com creator economy India",
+    "site:adgully.com creator economy India",
+    "site:brandequity.economictimes.indiatimes.com creator economy India"
   ];
   const unique = [];
   const seen = new Set();
@@ -1523,6 +1615,57 @@ function sourceFromLink(link) {
   } catch {
     return "Live feed";
   }
+}
+
+function safeCacheId(value) {
+  return String(value || "")
+    .replace(/[^a-z0-9_-]/gi, "")
+    .slice(0, 80) || "thumb";
+}
+
+function thumbnailCachePath(id) {
+  return path.join(thumbnailCacheDir, `${safeCacheId(id)}.img`);
+}
+
+function thumbnailInitials(reel) {
+  return String(reel?.sourceHandle || reel?.title || reel?.caption || "Reel")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "RE";
+}
+
+function thumbnailFallbackSvg(reel) {
+  const initials = thumbnailInitials(reel);
+  const title = stripHtml(reel?.title || reel?.caption || "Reel thumbnail unavailable").slice(0, 64);
+  return Buffer.from(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop stop-color="#f4dfaa"/>
+          <stop offset="1" stop-color="#8f6a18"/>
+        </linearGradient>
+        <radialGradient id="glow" cx="25%" cy="15%" r="80%">
+          <stop stop-color="#ffffff" stop-opacity=".55"/>
+          <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="160" height="160" rx="30" fill="url(#bg)"/>
+      <rect width="160" height="160" rx="30" fill="url(#glow)"/>
+      <circle cx="80" cy="66" r="34" fill="rgba(255,255,255,.35)"/>
+      <text x="80" y="78" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="800" fill="#2b2114">${escapeXml(initials)}</text>
+      <text x="80" y="122" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="#3b2c16">${escapeXml(title)}</text>
+    </svg>
+  `.trim());
+}
+
+function escapeXml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function parseRssItems(xml, topic, query) {
@@ -1566,12 +1709,14 @@ function mergeNewsById(existing, incoming) {
   const byId = new Map();
   [...existing, ...incoming].forEach((story) => {
     const normalized = normalizeNews(story);
-    const key = normalized.url || normalized.id || normalized.headline.toLowerCase();
+    const headlineKey = slugify(normalized.headline).slice(0, 110);
+    const sourceKey = slugify(normalized.source).slice(0, 40);
+    const key = headlineKey ? `${headlineKey}:${sourceKey}` : normalized.url || normalized.id;
     byId.set(String(key), normalized);
   });
   return [...byId.values()]
     .sort((left, right) => new Date(right.publishedAt) - new Date(left.publishedAt))
-    .slice(0, 80);
+    .slice(0, 160);
 }
 
 async function fetchGoogleNewsRss(query, lookbackDays = newsLookbackDays) {
@@ -1598,12 +1743,16 @@ async function fetchGoogleNewsRss(query, lookbackDays = newsLookbackDays) {
 async function runLiveNewsImport(store, options = {}) {
   const config = newsConfig(store);
   const lookbackDays = Math.min(30, Math.max(1, Number(options.lookbackDays || config.lookbackDays || newsLookbackDays)));
+  const expandedQueries = buildLiveNewsQueries(store);
   const queries = Array.isArray(options.queries) && options.queries.length
     ? options.queries.map((query) => String(query || "").trim()).filter(Boolean)
-    : buildLiveNewsQueries(store);
+    : [...config.queries, ...expandedQueries].filter((query, index, list) => {
+        const normalized = String(query || "").trim().toLowerCase();
+        return normalized && list.findIndex((item) => String(item || "").trim().toLowerCase() === normalized) === index;
+      }).slice(0, newsQueryLimit);
   if (!queries.length) throw new Error("No live news queries available.");
 
-  const perQuery = clamp(Number(options.perQuery || 10), 1, 20);
+  const perQuery = clamp(Number(options.perQuery || 12), 1, 25);
   const collected = [];
   for (const query of queries) {
     const xml = await fetchGoogleNewsRss(query, lookbackDays);
@@ -1624,7 +1773,7 @@ async function runLiveNewsImport(store, options = {}) {
       return new Date(right.story.publishedAt) - new Date(left.story.publishedAt);
     })
     .map(({ story }) => story)
-    .slice(0, 80);
+    .slice(0, 120);
 
   if (!scored.length) throw new Error("No niche-relevant live news stories were returned.");
 
@@ -1870,7 +2019,7 @@ function computeDashboard(store, query) {
     ? reels.filter((reel) => String(reel.sourceHandle || "").trim().toLowerCase() === creatorHandle)
     : reels;
   const filtered = applyFilters(creatorReels, query);
-  const range = clamp(Number(query.range || 365), 7, 365);
+  const range = clamp(Number(query.range || 365), 1, 365);
   const previousWindowStart = daysAgo(range * 2 - 1);
   const previousWindowEnd = daysAgo(range);
   const previous = creatorReels.filter((reel) => {
@@ -1884,17 +2033,19 @@ function computeDashboard(store, query) {
   const heatmap = postingHeatmap(filtered);
   const competitorRows = computeCompetitorRows(store);
 
-  const configuredLookbackDays = newsConfig(store).lookbackDays || newsLookbackDays;
+  const configuredLookbackDays = Math.min(14, Math.max(1, Number(newsConfig(store).lookbackDays || newsLookbackDays)));
   const recentNews = store.news
     .map(normalizeNews)
     .filter((story) => isRecentNewsStory(story, configuredLookbackDays));
-  const fallbackNews = recentNews.length
-    ? recentNews
+  const storedNewsFallback = recentNews.length
+    ? []
     : store.news
         .map(normalizeNews)
         .sort((left, right) => new Date(right.publishedAt) - new Date(left.publishedAt))
-        .slice(0, 12);
-  const news = fallbackNews
+        .slice(0, 80)
+        .map((story) => ({ ...story, isArchived: true }));
+  const newsInput = recentNews.length ? recentNews : storedNewsFallback;
+  const news = newsInput
     .map((story) => {
       const score = scoreNewsForCreator(story, store);
       const recommendation = newsRecommendationType(story);
@@ -1982,10 +2133,12 @@ function computeDashboard(store, query) {
         label: (store.competitorReels || []).length ? "Competitors imported" : "Competitors seeded"
       },
       news: {
-        status: news.some((story) => story.sourceType === "live-rss" || story.sourceType === "apify") ? "live-imported" : "seeded",
+        status: recentNews.length
+          ? (news.some((story) => story.sourceType === "live-rss" || story.sourceType === "apify") ? "live-imported" : "seeded")
+          : "archive",
         label: recentNews.length
           ? `News imported live (${configuredLookbackDays}d)`
-          : (news.length ? `Showing latest stored news` : `No recent news (${configuredLookbackDays}d)`),
+          : `Archive news shown · refresh for live (${configuredLookbackDays}d)`,
         lastLiveRunAt: newsConfig(store).lastLiveRunAt,
         lastSource: newsConfig(store).lastSource,
         lookbackDays: newsConfig(store).lookbackDays
@@ -2019,38 +2172,16 @@ function computeDashboard(store, query) {
 }
 
 async function decorateDashboard(store, dashboard) {
-  const decorations = await withTimeout(generateDashboardDecorations(store, dashboard).catch(() => null), 8000);
-  if (!decorations) return dashboard;
-  const news = dashboard.news.map((story) => {
-    const blueprint = decorations.blueprints.get(String(story.id));
-    if (!blueprint) return story;
-    return {
-      ...story,
-      reelBlueprint: {
-        angle: blueprint.angle || story.reelBlueprint?.angle || story.summary,
-        hooks: blueprint.hooks?.length ? blueprint.hooks : story.reelBlueprint?.hooks || [],
-        structure: blueprint.structure?.length ? blueprint.structure : story.reelBlueprint?.structure || [],
-        cta: blueprint.cta || story.reelBlueprint?.cta || "Follow for more niche-specific business and creator signals."
-      }
-    };
-  });
-  return {
-    ...dashboard,
-    header: {
-      ...dashboard.header,
-      title: decorations.header?.title || dashboard.header.title,
-      subtitle: decorations.header?.subtitle || dashboard.header.subtitle
-    },
-    insights: decorations.insights?.length
-      ? decorations.insights.map((item, index) => ({
-          ...dashboard.insights[index],
-          ...item,
-          citation: dashboard.insights[index]?.citation || { view: "performance", section: "insights", label: "AI insights" }
-        }))
-      : dashboard.insights,
-    suggestions: decorations.suggestions?.length ? decorations.suggestions : dashboard.suggestions,
-    news
-  };
+  const cacheKey = dashboardDecorCacheKey(store, dashboard);
+  const cached = dashboardDecorCache.get(cacheKey);
+  if (!cached) {
+    primeDashboardDecorations(store, dashboard);
+    return dashboard;
+  }
+  if (Date.now() - cached.updatedAt >= 10 * 60_000) {
+    primeDashboardDecorations(store, dashboard);
+  }
+  return applyDashboardDecorations(dashboard, cached.payload);
 }
 
 function compactDashboard(dashboard) {
@@ -2156,6 +2287,41 @@ function reelTranscriptText(reel) {
   return compactChatText([reel.transcript, timestamped, scriptSummary, scenes, reel.caption].filter(Boolean).join(" "), 700);
 }
 
+function transcriptSnippetScore(snippet, queryTokens) {
+  const haystack = String(snippet || "").toLowerCase();
+  return queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+}
+
+function bestTranscriptSnippet(reel, queryTokens) {
+  const segmentTexts = normalizeTimestampedTranscript(reel.timestampedTranscript)
+    .map((segment) => segment.text)
+    .filter(Boolean);
+  const sceneTexts = Array.isArray(reel.sceneBreakdown)
+    ? reel.sceneBreakdown.map((scene) => scene?.text).filter(Boolean)
+    : [];
+  const candidates = [
+    ...segmentTexts.slice(0, 12),
+    ...sceneTexts.slice(0, 8),
+    ...String(reel.transcript || "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 12)
+  ]
+    .map((text) => compactChatText(text, 220))
+    .filter(Boolean);
+  if (!candidates.length) return "";
+  if (!queryTokens.length) return candidates[0];
+  return candidates
+    .map((text, index) => ({ text, score: transcriptSnippetScore(text, queryTokens), index }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0]
+    .text;
+}
+
+function transcriptStrength(reel) {
+  const segments = normalizeTimestampedTranscript(reel.timestampedTranscript);
+  if (segments.length >= 3) return 3;
+  if (String(reel.transcript || "").trim()) return 2;
+  if (Array.isArray(reel.scriptSummary) && reel.scriptSummary.length) return 1;
+  return 0;
+}
+
 function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = null) {
   const queryText = [
     prompt,
@@ -2172,16 +2338,27 @@ function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = nu
     .map((reel) => {
       const transcript = reelTranscriptText(reel);
       if (!transcript) return null;
+      const openingLine = compactChatText(
+        normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text
+          || reel.scriptSummary?.[0]
+          || transcript,
+        140
+      );
+      const matchedSnippet = bestTranscriptSnippet(reel, queryTokens);
       const haystack = [
         reel.title,
         reel.caption,
         reel.hook,
         reel.pillar,
+        reel.strategy,
         transcript
       ].join(" ").toLowerCase();
       const keywordScore = queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
       const score = keywordScore * 10
         + (topIds.has(String(reel.id)) ? 8 : 0)
+        + transcriptSnippetScore(openingLine, queryTokens) * 6
+        + transcriptSnippetScore(matchedSnippet, queryTokens) * 8
+        + transcriptStrength(reel) * 5
         + Math.min(8, Number(reel.views || 0) / 100000);
       return {
         id: reel.id,
@@ -2189,24 +2366,76 @@ function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = nu
         postedAt: reel.postedAt,
         hook: reel.hook,
         pillar: reel.pillar,
+        strategy: reel.strategy,
         views: reel.views,
         engagementRate: reel.engagementRate,
-        transcript,
+        openingLine,
+        matchedSnippet: matchedSnippet || openingLine,
+        transcript: compactChatText(transcript, 320),
+        transcriptStrength: transcriptStrength(reel),
         score
       };
     })
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
-    .slice(0, 6)
+    .slice(0, 8)
     .map(({ score, ...item }) => item);
+}
+
+function transcriptSourceReels(transcriptContext = [], limit = 6) {
+  return (Array.isArray(transcriptContext) ? transcriptContext : [])
+    .slice(0, limit)
+    .map((reel) => ({
+      id: reel.id,
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      openingLine: reel.openingLine,
+      postedAt: reel.postedAt,
+      views: reel.views
+    }));
+}
+
+function chatGroundingMeta(transcriptContext = [], options = {}) {
+  if (options.analyticsOnly) {
+    return { grounding: "analytics", sourceReels: [] };
+  }
+  const sourceReels = transcriptSourceReels(transcriptContext, Number(options.limit || 6));
+  return {
+    grounding: sourceReels.length ? "transcript" : "analytics",
+    sourceReels
+  };
+}
+
+function isMonthlySummaryRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  return query.includes("monthly summary")
+    || (query.includes("month") && query.includes("summary"))
+    || (query.includes("current dashboard") && query.includes("summary"));
+}
+
+function isWeeklyPlanRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  return query.includes("weekly plan")
+    || query.includes("week plan")
+    || query.includes("plan for this week")
+    || query.includes("7 day plan")
+    || query.includes("7-day plan");
 }
 
 function isNewsScriptRequest(prompt, selectedStory = null) {
   const query = String(prompt || "").trim().toLowerCase();
   if (!query) return false;
   const mentionsScript = query.includes("script") || query.includes("ready-to-record") || query.includes("ready to record");
-  const mentionsReel = query.includes("reel") || query.includes("news story") || query.includes("turn this");
-  return Boolean(selectedStory?.headline) && (mentionsScript || mentionsReel);
+  const mentionsStory = query.includes("selected story")
+    || query.includes("this story")
+    || query.includes("news story")
+    || query.includes("top news")
+    || query.includes("headline")
+    || query.includes("turn this")
+    || (selectedStory?.headline && query.includes(String(selectedStory.headline).toLowerCase().slice(0, 24)));
+  const mentionsReel = query.includes("reel") || query.includes("brief") || query.includes("angle");
+  return Boolean(selectedStory?.headline) && mentionsStory && (mentionsScript || mentionsReel);
 }
 
 function isNewsScriptFollowUp(prompt, selectedStory = null) {
@@ -2224,11 +2453,100 @@ function isNewsScriptFollowUp(prompt, selectedStory = null) {
     || query.includes("best option");
 }
 
+function isNextPostRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return (query.includes("next post") || query.includes("what should i post next") || query.includes("post next"))
+    || (query.includes("next reel") && !query.includes("news"))
+    || query.includes("next-post planner")
+    || query.includes("build my next post")
+    || query.includes("plan my next post");
+}
+
+function isTranscriptStrategyRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  if (isMonthlySummaryRequest(query) || isWeeklyPlanRequest(query)) return false;
+  if (/\b(summary|summarize|dashboard|analytics|kpi|report)\b/.test(query) && !/\b(transcript|transcription|script|reel|hook|ideas?|audit|rewrite)\b/.test(query)) {
+    return false;
+  }
+  const transcriptIntent = [
+    "transcript", "transcription", "script", "reel", "hook", "idea", "ideas", "analysis", "analyze",
+    "audit", "breakdown", "rewrite", "angle", "angles", "caption", "structure", "pacing", "opening",
+    "opener", "viral", "improve", "better", "next", "detail", "detailed", "deep"
+  ].some((token) => query.includes(token));
+  const askIntent = [
+    "idea", "ideas", "analysis", "analyze", "audit", "breakdown", "rewrite", "angle", "script",
+    "hook", "hooks", "next", "improve", "better", "detail", "detailed", "deep", "kyu", "why", "kaise", "kya"
+  ].some((token) => query.includes(token));
+  return transcriptIntent && askIntent;
+}
+
+function chatMonthlySummaryAnswer(dashboard) {
+  const context = buildContextSummary(dashboard);
+  const kpis = Array.isArray(dashboard.kpis) ? dashboard.kpis.slice(0, 6) : [];
+  const topReel = dashboard.topReels?.[0];
+  const topHook = context.hookLeader?.label || "top hook";
+  const topPillar = context.pillarLeader?.label || "top pillar";
+  const competitor = context.topCompetitor;
+  const news = context.topNews;
+  return [
+    "Monthly dashboard summary",
+    `Performance: ${kpis.map((kpi) => `${kpi.label} ${kpi.value}`).join(", ") || context.kpis}.`,
+    topReel ? `Top content signal: "${compactChatText(topReel.title || topReel.caption, 120)}" led the set with ${topReel.viewsLabel || fmtCompact(topReel.views)} views. The repeatable pattern is ${topHook} inside ${topPillar}.` : `Top content signal: ${topHook} inside ${topPillar}.`,
+    competitor ? `Competitor signal: ${competitor.name} is the key watchlist creator right now with ${competitor.monthlyGrowthLabel || "tracked"} momentum and ${competitor.bestFormat || "short video"} as the visible format.` : "",
+    news ? `News signal: "${compactChatText(news.headline, 120)}" is the strongest live angle to convert into a topical reel.` : "",
+    "What to do next: publish 2 data-hook explainers, 1 founder/story reel, 1 topical news response, and 1 re-cut of the best opener pattern. Do not spread into new pillars until the current winners are exhausted."
+  ].filter(Boolean).join("\n\n");
+}
+
+function chatWeeklyPlanAnswer(dashboard, transcriptContext = []) {
+  const context = buildContextSummary(dashboard);
+  const lead = transcriptContext?.[0] || null;
+  const topHook = lead?.hook || context.hookLeader?.label || "Data Hook";
+  const topPillar = lead?.pillar || context.pillarLeader?.label || "Business";
+  const opener = lead?.openingLine || "Start with one specific number or contradiction.";
+  return [
+    "Weekly content plan",
+    `Rule for the week: stay inside ${topPillar}, use ${topHook}, and open close to this proven rhythm: "${compactChatText(opener, 140)}"`,
+    "Mon: Data-led business breakdown. Open with one surprising number, then explain the hidden mechanism.",
+    "Tue: Founder lesson reel. Use one personal mistake or decision, then extract the business principle.",
+    "Wed: Competitor/news response. Take the strongest News Radar story and turn it into a direct-to-camera opinion.",
+    "Thu: Re-cut winner. Reuse the best opening structure from the source transcript, but swap the example.",
+    "Fri/Sat: High-conviction prediction. One strong claim, one proof point, one takeaway.",
+    "Measurement: judge the week by hook retention, saves/comments, and whether the first 3 seconds can stand alone as a headline."
+  ].join("\n\n");
+}
+
 function selectedHookIndex(prompt) {
   const query = String(prompt || "").trim().toLowerCase();
   const match = query.match(/option\s*([123])/) || query.match(/^([123])$/);
   if (!match) return null;
   return Number(match[1]) - 1;
+}
+
+function transcriptStrategyFallbackAnswer(prompt, dashboard, transcriptContext = []) {
+  const lead = transcriptContext?.[0] || null;
+  const support = transcriptContext?.[1] || null;
+  if (!lead) {
+    return [
+      "Transcript-backed analysis is not available yet.",
+      "Import or analyze a few reels with transcripts first, then ask for ideas, hooks, script rewrites, or a reel audit."
+    ].join("\n\n");
+  }
+  const pillar = lead.pillar || dashboard.charts?.pillars?.[0]?.label || "your main pillar";
+  const hook = lead.hook || dashboard.charts?.hooks?.[0]?.label || "direct hook";
+  const opener = lead.openingLine || lead.matchedSnippet || lead.transcript || "Start with the strongest claim first.";
+  const supportLine = support?.matchedSnippet || lead.matchedSnippet || "";
+  return [
+    `Transcript pattern: "${lead.title}" is the closest reference. It opens with: "${compactChatText(opener, 170)}"`,
+    `Why it works: it starts specific, keeps the viewer inside ${pillar}, and uses a ${hook} instead of a generic intro.`,
+    "New idea 1: Turn the first line into a sharper contrarian claim, then explain the hidden reason in 3 beats.",
+    "New idea 2: Make a founder/business example reel using the same opening rhythm, but swap the proof point.",
+    "New idea 3: Use the same structure for a myth-vs-reality reel: myth, real reason, takeaway.",
+    supportLine ? `Line to borrow: "${compactChatText(supportLine, 170)}"` : "",
+    "Best next action: ask me for `write full script from this transcript pattern` and I will turn it into a ready-to-record reel."
+  ].filter(Boolean).join("\n\n");
 }
 
 function chatNewsAnswer(story, fallbackHeadline = "this story", preferredHookIndex = null, transcriptContext = []) {
@@ -2241,7 +2559,7 @@ function chatNewsAnswer(story, fallbackHeadline = "this story", preferredHookInd
   const angle = blueprint?.angle || summary;
   const referenceReel = Array.isArray(transcriptContext) ? transcriptContext[0] : null;
   const learnedPattern = referenceReel
-    ? `Pattern learned from "${referenceReel.title}": ${compactChatText(referenceReel.transcript, 190)}`
+    ? `Pattern learned from "${referenceReel.title}": opener "${referenceReel.openingLine || referenceReel.transcript}" and phrasing "${compactChatText(referenceReel.matchedSnippet || referenceReel.transcript, 190)}"`
     : "";
   const whyItMatters = String(blueprint?.structure?.[2] || "Connect the update to business, D2C, or creator behavior.")
     .replace(/^Why it matters:\s*/i, "");
@@ -2258,10 +2576,35 @@ function chatNewsAnswer(story, fallbackHeadline = "this story", preferredHookInd
   ].filter(Boolean).join("\n\n");
 }
 
+function chatNextPostAnswer(dashboard, transcriptContext = []) {
+  const context = buildContextSummary(dashboard);
+  const lead = transcriptContext?.[0] || null;
+  const support = transcriptContext?.[1] || null;
+  const hook = lead?.hook || context.hookLeader?.label || "Question Hook";
+  const pillar = lead?.pillar || context.pillarLeader?.label || "General";
+  const opener = lead?.openingLine || "Most people are missing the real reason this is happening.";
+  const supportingPhrase = support?.matchedSnippet || lead?.matchedSnippet || lead?.transcript || "";
+  const structure = [
+    `Start with this exact style of opener: "${opener}"`,
+    `Move into one sharp insight inside ${pillar.toLowerCase()} instead of broad education.`,
+    supportingPhrase ? `Use this transcript-style phrasing as your second beat: "${compactChatText(supportingPhrase, 150)}"` : "",
+    "Close with one practical takeaway or opinion, not a generic summary."
+  ].filter(Boolean);
+  return [
+    "Next post planner",
+    `Hook: ${hook} with a first-line opener close to "${opener}"`,
+    `Angle: Stay in ${pillar} and make the post feel creator-native, specific, and fast to understand.`,
+    `Structure: ${structure.join(" ")}`,
+    "CTA: End with one clear takeaway and a soft follow/save prompt, not a hard sell.",
+    `Delivery: 30-45 sec, direct-to-camera, first frame text should land the claim immediately, publish near ${dashboard.insights?.[3]?.title || "your highest-scoring time slot"}.`
+  ].join("\n\n");
+}
+
 function fallbackChat(prompt, dashboard, selectedStory = null) {
   const cleanPrompt = String(prompt || "").trim();
   const query = cleanPrompt.toLowerCase();
   const context = buildContextSummary(dashboard);
+  const transcriptLead = context.transcriptContext?.[0] || null;
 
   if (!cleanPrompt || cleanPrompt.length < 6) {
     return {
@@ -2285,8 +2628,11 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
   }
 
   if (query.includes("post") && query.includes("next")) {
+    const transcriptAngle = transcriptLead
+      ? ` Your closest winning transcript example is "${transcriptLead.title}", which opens with "${transcriptLead.openingLine}" and leans into ${String(transcriptLead.strategy || "a direct creator-native delivery").toLowerCase()}.`
+      : "";
     return {
-      answer: `Next post should stay inside ${context.pillarLeader.label}, use a ${context.hookLeader.label} opener, and target the highest-scoring slot from your heatmap. That combination is currently your cleanest path to both saves and retention.`,
+      answer: `${chatNextPostAnswer(dashboard, context.transcriptContext || [])}${transcriptAngle}`,
       citations: [dashboard.insights[0]?.citation, dashboard.insights[2]?.citation, dashboard.insights[3]?.citation].filter(Boolean)
     };
   }
@@ -2313,8 +2659,18 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
     };
   }
 
+  if (transcriptLead && isTranscriptStrategyRequest(cleanPrompt)) {
+    return {
+      answer: `Closest transcript-backed pattern right now is "${transcriptLead.title}". It opens with "${transcriptLead.openingLine}", sits in ${transcriptLead.pillar}, and the strongest matched phrasing is "${transcriptLead.matchedSnippet}". If you want, ask for next-post planning, hook rewrite, or reel script and I will use this transcript pattern directly.`,
+      citations: [
+        { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+        dashboard.insights[0]?.citation
+      ].filter(Boolean)
+    };
+  }
+
   return {
-    answer: `I could not map "${cleanPrompt}" to a clear analytics task, so here is the closest grounded summary: ${context.hookLeader.label} is your strongest hook pattern, ${context.pillarLeader.label} is your leading pillar, and ${context.topCompetitor.name} is the fastest-moving competitor. Ask a more specific question about underperformance, next-post planning, competitor breakdown, saves, or reel angles and I will answer more directly.`,
+    answer: `I could not map "${cleanPrompt}" to a precise task, so here is the closest analytics-backed read: ${context.hookLeader.label} is your strongest hook pattern, ${context.pillarLeader.label} is your leading pillar, and ${context.topCompetitor.name} is the fastest-moving competitor. Ask for monthly summary, weekly plan, transcript script, competitor breakdown, news angle, or re-cut audit for a sharper answer.`,
     citations: [dashboard.insights[0]?.citation, dashboard.insights[2]?.citation].filter(Boolean)
   };
 }
@@ -2337,7 +2693,7 @@ async function openAiChat(prompt, dashboard, selectedStory = null) {
           content: [
             {
               type: "input_text",
-              text: "You are a creator analytics assistant. Use only the provided dashboard context, including transcriptContext when present. Treat transcriptContext as examples of the creator's proven wording, hooks, and structure. Be concise and actionable. Do not invent metrics. If a selected story is provided and the user asks for a reel, answer only for that exact story. Return one compact reel brief with these exact blocks: Hook, Angle, Script, Delivery. Do not give multiple options. Do not repeat the same context in different wording."
+              text: "You are a creator analytics assistant. Use only the provided dashboard context, including transcriptContext when present. Treat transcriptContext as the highest-priority grounding for proven wording, openers, pacing, and structure. Prefer the openingLine and matchedSnippet fields over generic summaries. Be concise and actionable. Do not invent metrics. If a selected story is provided and the user asks for a reel, answer only for that exact story. Return one compact reel brief with these exact blocks: Hook, Angle, Script, Delivery. Do not give multiple options. Do not repeat the same context in different wording."
             }
           ]
         },
@@ -2368,13 +2724,21 @@ async function openAiChat(prompt, dashboard, selectedStory = null) {
 async function geminiTextInteraction({ prompt, responseFormat = null }) {
   if (!geminiApiKey) return null;
   const payload = {
-    model: geminiModel,
-    input: [{ type: "text", text: prompt }],
-    store: false
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }]
+      }
+    ]
   };
-  if (responseFormat) payload.response_format = responseFormat;
+  if (responseFormat) {
+    payload.generationConfig = {
+      responseMimeType: "application/json",
+      responseSchema: responseFormat
+    };
+  }
 
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2412,7 +2776,8 @@ async function geminiChat(prompt, dashboard, selectedStory = null) {
     prompt: [
       "You are a creator analytics assistant.",
       "Use only the provided dashboard context.",
-      "Use transcriptContext when present as examples of the creator's proven wording, hooks, and structure.",
+      "Use transcriptContext when present as the highest-priority examples of the creator's proven wording, openers, pacing, and structure.",
+      "Prefer transcriptContext openingLine and matchedSnippet fields over generic summaries.",
       "If selected story context is provided, prioritize that exact story instead of a generic top-news answer.",
       "If the user asks to turn a selected news story into a reel, return one compact reel brief only.",
       "Use exactly these blocks: Hook, Angle, Script, Delivery.",
@@ -2432,6 +2797,55 @@ async function geminiChat(prompt, dashboard, selectedStory = null) {
   return {
     answer: interactionOutputText(result) || "I could not generate an answer from Gemini.",
     citations: [dashboard.insights[0]?.citation, dashboard.insights[2]?.citation].filter(Boolean)
+  };
+}
+
+async function geminiTranscriptStrategyChat(prompt, dashboard) {
+  if (!geminiApiKey) return null;
+  const context = buildContextSummary(dashboard);
+  const transcriptContext = Array.isArray(context.transcriptContext) ? context.transcriptContext.slice(0, 5) : [];
+  if (!transcriptContext.length) {
+    return {
+      answer: transcriptStrategyFallbackAnswer(prompt, dashboard, transcriptContext),
+      citations: [{ view: "performance", section: "allPostsTable", label: "Transcript examples" }]
+    };
+  }
+
+  const result = await geminiTextInteraction({
+    prompt: [
+      "You are a short-form creator strategy analyst.",
+      "The user wants ideas, analysis, hooks, rewrites, or scripts based on saved reel transcripts.",
+      "Use transcriptContext as the primary source. Do not give generic social media advice.",
+      "Extract the proven opener pattern, pacing, language, and content angle from the provided transcript snippets.",
+      "Do not invent metrics. If metrics are missing, ignore them.",
+      "Answer in Hinglish-friendly concise English.",
+      "Format exactly with these blocks:",
+      "1. Transcript Pattern",
+      "2. What To Copy",
+      "3. New Ideas",
+      "4. Ready Hook",
+      "5. Execution",
+      "For New Ideas, give 5 specific ideas. For Execution, include scene-by-scene beats for the strongest idea.",
+      "Keep it detailed but tight, around 350-500 words.",
+      "",
+      `Dashboard context: ${JSON.stringify({
+        creator: context.creator,
+        kpis: context.kpis,
+        hookLeader: context.hookLeader,
+        pillarLeader: context.pillarLeader,
+        transcriptContext
+      })}`,
+      "",
+      `User ask: ${prompt}`
+    ].join("\n")
+  });
+
+  return {
+    answer: interactionOutputText(result) || transcriptStrategyFallbackAnswer(prompt, dashboard, transcriptContext),
+    citations: [
+      { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+      dashboard.insights[0]?.citation
+    ].filter(Boolean)
   };
 }
 
@@ -2550,42 +2964,45 @@ async function transcribeReelMediaWithGemini(reel) {
     throw new Error("Gemini inline transcription currently supports media files up to 20 MB. Use local Whisper for larger reels.");
   }
 
-  const result = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+  const result = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-goog-api-key": geminiApiKey
     },
     body: JSON.stringify({
-      model: geminiModel,
-      store: false,
-      response_format: {
-        type: "object",
-        properties: {
-          transcript: { type: "string" },
-          language: { type: "string" },
-          segments: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                timestamp: { type: "string" },
-                content: { type: "string" }
-              },
-              required: ["timestamp", "content"]
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "object",
+          properties: {
+            transcript: { type: "string" },
+            language: { type: "string" },
+            segments: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  timestamp: { type: "string" },
+                  content: { type: "string" }
+                },
+                required: ["timestamp", "content"]
+              }
             }
+          },
+          required: ["transcript", "segments"]
+        }
+      },
+      contents: [{
+        role: "user",
+        parts: [
+        {
+          inlineData: {
+            mimeType: contentType,
+            data: mediaBuffer.toString("base64")
           }
         },
-        required: ["transcript", "segments"]
-      },
-      input: [
         {
-          type: contentType.startsWith("audio/") ? "audio" : "video",
-          data: mediaBuffer.toString("base64"),
-          mime_type: contentType
-        },
-        {
-          type: "text",
           text: [
             "Generate a transcript of this reel.",
             "Return JSON only.",
@@ -2595,7 +3012,7 @@ async function transcribeReelMediaWithGemini(reel) {
             "3. segments: up to 12 timestamped segments with timestamp and content"
           ].join("\n")
         }
-      ]
+      ]}]
     })
   });
 
@@ -3902,7 +4319,7 @@ createServer(async (request, response) => {
       return replyJson(response, 200, { reel });
     }
 
-    if (url.pathname === "/api/reel-thumbnail" && request.method === "GET") {
+    if (url.pathname === "/api/reel-thumbnail" && (request.method === "GET" || request.method === "HEAD")) {
       const id = String(url.searchParams.get("id") || "");
       const requestedSource = String(url.searchParams.get("src") || "");
       const store = await readStore();
@@ -3910,35 +4327,85 @@ createServer(async (request, response) => {
         .map(normalizeReel)
         .find((item) => item.id === id);
       const thumbnailUrl = String(reel?.thumbnailUrl || requestedSource || "");
-      if (!thumbnailUrl || !/^https:\/\/(?:[^/]+\.)*(?:instagram\.com|cdninstagram\.com|fbcdn\.net)\//i.test(thumbnailUrl)) {
-        response.writeHead(404);
-        response.end();
+      const cachePath = thumbnailCachePath(id || thumbnailUrl);
+      const cached = await readFile(cachePath).catch(() => null);
+      if (cached) {
+        response.writeHead(200, {
+          "Content-Type": "image/jpeg",
+          "Cache-Control": "public, max-age=86400"
+        });
+        if (request.method === "HEAD") {
+          response.end();
+          return;
+        }
+        response.end(cached);
         return;
       }
-      const imageResponse = await fetch(thumbnailUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-          Referer: "https://www.instagram.com/"
+      if (!thumbnailUrl || !/^https:\/\/(?:[^/]+\.)*(?:instagram\.com|cdninstagram\.com|fbcdn\.net)\//i.test(thumbnailUrl)) {
+        response.writeHead(200, {
+          "Content-Type": "image/svg+xml; charset=utf-8",
+          "Cache-Control": "public, max-age=3600"
+        });
+        if (request.method === "HEAD") {
+          response.end();
+          return;
         }
-      });
-      if (!imageResponse.ok) {
-        response.writeHead(imageResponse.status);
-        response.end();
+        response.end(thumbnailFallbackSvg(reel));
+        return;
+      }
+      let imageResponse = null;
+      try {
+        imageResponse = await fetch(thumbnailUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+            Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            Referer: "https://www.instagram.com/"
+          }
+        });
+      } catch {
+        imageResponse = null;
+      }
+      if (!imageResponse?.ok) {
+        response.writeHead(200, {
+          "Content-Type": "image/svg+xml; charset=utf-8",
+          "Cache-Control": "public, max-age=900"
+        });
+        if (request.method === "HEAD") {
+          response.end();
+          return;
+        }
+        response.end(thumbnailFallbackSvg(reel));
         return;
       }
       const contentType = imageResponse.headers.get("content-type") || "image/jpeg";
+      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+      await mkdir(thumbnailCacheDir, { recursive: true }).catch(() => {});
+      await writeFile(cachePath, imageBuffer).catch(() => {});
       response.writeHead(200, {
         "Content-Type": contentType,
-        "Cache-Control": "public, max-age=3600"
+        "Cache-Control": "public, max-age=86400"
       });
-      response.end(Buffer.from(await imageResponse.arrayBuffer()));
+      if (request.method === "HEAD") {
+        response.end();
+        return;
+      }
+      response.end(imageBuffer);
       return;
     }
 
     if (url.pathname === "/api/chart-series" && request.method === "GET") {
       const dashboard = computeDashboard(await readStore(), Object.fromEntries(url.searchParams.entries()));
       return replyJson(response, 200, dashboard.charts);
+    }
+
+    if (url.pathname === "/api/news/import-live" && request.method === "POST") {
+      if (isRateLimited(request, "news-refresh", 6, 10 * 60_000)) {
+        return replyJson(response, 429, { error: "Too many news refreshes. Try again shortly." });
+      }
+      const current = await readStore();
+      const result = await handleLiveNewsImport({ lookbackDays: 14, perQuery: 15 }, current);
+      return replyJson(response, result.status, result.payload);
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
@@ -3951,9 +4418,59 @@ createServer(async (request, response) => {
       const store = await readStore();
       const dashboard = computeDashboard(store, body.filters || {});
       dashboard.transcriptContext = buildChatTranscriptContext(store, dashboard, prompt, selectedStory);
+      const analyticsMeta = chatGroundingMeta(dashboard.transcriptContext, { analyticsOnly: true });
+      const transcriptMeta = chatGroundingMeta(dashboard.transcriptContext, { limit: 6 });
+      if (isMonthlySummaryRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatMonthlySummaryAnswer(dashboard),
+          ...analyticsMeta,
+          citations: [
+            { view: "performance", section: "kpiGrid", label: "Dashboard KPIs" },
+            dashboard.insights[0]?.citation,
+            dashboard.insights[2]?.citation
+          ].filter(Boolean)
+        });
+      }
+      if (isWeeklyPlanRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatWeeklyPlanAnswer(dashboard, dashboard.transcriptContext),
+          ...chatGroundingMeta(dashboard.transcriptContext, { limit: 4 }),
+          citations: [
+            { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+            dashboard.insights[3]?.citation
+          ].filter(Boolean)
+        });
+      }
+      if (isNextPostRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatNextPostAnswer(dashboard, dashboard.transcriptContext),
+          ...chatGroundingMeta(dashboard.transcriptContext, { limit: 4 }),
+          citations: [
+            { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+            dashboard.insights[0]?.citation,
+            dashboard.insights[3]?.citation
+          ].filter(Boolean)
+        });
+      }
+      if (isTranscriptStrategyRequest(prompt)) {
+        let transcriptResult = null;
+        try {
+          transcriptResult = await geminiTranscriptStrategyChat(prompt, dashboard);
+        } catch {
+          transcriptResult = null;
+        }
+        return replyJson(response, 200, {
+          ...(transcriptResult || {
+            answer: transcriptStrategyFallbackAnswer(prompt, dashboard, dashboard.transcriptContext),
+            citations: [{ view: "performance", section: "allPostsTable", label: "Transcript examples" }]
+          }),
+          ...transcriptMeta
+        });
+      }
       if (isNewsScriptRequest(prompt, selectedStory) || isNewsScriptFollowUp(prompt, selectedStory)) {
         return replyJson(response, 200, {
           answer: chatNewsAnswer(selectedStory, dashboard.news?.[0]?.headline, selectedHookIndex(prompt), dashboard.transcriptContext),
+          ...chatGroundingMeta(dashboard.transcriptContext, { limit: 4 }),
           citations: [
             { view: "news", section: "newsGrid", label: "News radar" },
             { view: "performance", section: "allPostsTable", label: "Transcript examples" }
@@ -3972,7 +4489,10 @@ createServer(async (request, response) => {
       } catch {
         result = null;
       }
-      return replyJson(response, 200, result || fallbackChat(prompt, dashboard, selectedStory));
+      return replyJson(response, 200, {
+        ...(result || fallbackChat(prompt, dashboard, selectedStory)),
+        ...analyticsMeta
+      });
     }
 
     if (url.pathname === "/api/assistant/state" && request.method === "GET") {
