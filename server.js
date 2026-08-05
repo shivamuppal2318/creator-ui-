@@ -35,6 +35,7 @@ loadEnvFile(envPath);
 const dataDir = path.join(root, "data");
 const thumbnailCacheDir = path.join(dataDir, "thumbnails");
 const storePath = path.join(dataDir, "store.json");
+const businessVideosPath = path.join(dataDir, "business-videos.json");
 const sqlitePath = path.join(dataDir, "creator-os.db");
 const publicFiles = new Set(["index.html", "app.css", "app.js"]);
 const port = Number(process.env.PORT || 8787);
@@ -45,12 +46,24 @@ const openAiModel = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const openAiTranscriptionModel = process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
 const geminiModel = process.env.GEMINI_MODEL || "gemini-flash-latest";
+const geminiModelCandidates = [...new Set([
+  geminiModel,
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-flash-latest"
+].filter(Boolean))];
+const CREATOR_FOLLOWER_OVERRIDES = new Map([
+  ["abvaidya", { followers: 401582, followersLabel: "401,582", source: "Public profile source" }]
+]);
 const newsLookbackDays = Math.max(1, Math.min(365, Number(process.env.NEWS_LOOKBACK_DAYS || 30)));
 const newsQueryLimit = Math.max(5, Math.min(80, Number(process.env.NEWS_QUERY_LIMIT || 60)));
 const apifyAutoImportEnabledEnv = String(process.env.APIFY_AUTO_IMPORT_ENABLED || "").toLowerCase() === "true";
 const apifyAutoImportIntervalMinutesEnv = Math.max(15, Number(process.env.APIFY_AUTO_IMPORT_INTERVAL_MINUTES || 180));
 const apifyAutoImportUsernameEnv = String(process.env.APIFY_AUTO_IMPORT_USERNAME || "").replace(/^@/, "").trim().toLowerCase();
 const apifyAutoImportResultsLimitEnv = Math.max(1, Math.min(10, Number(process.env.APIFY_AUTO_IMPORT_RESULTS_LIMIT || 3)));
+const apifyMetadataRefreshEnabledEnv = String(process.env.APIFY_METADATA_REFRESH_ENABLED || "true").toLowerCase() === "true";
+const apifyMetadataRefreshIntervalDaysEnv = Math.max(1, Math.min(30, Number(process.env.APIFY_METADATA_REFRESH_INTERVAL_DAYS || 7)));
+const apifyMetadataRefreshBatchSizeEnv = Math.max(1, Math.min(15, Number(process.env.APIFY_METADATA_REFRESH_BATCH_SIZE || 3)));
 const transcriptionProvider = (process.env.TRANSCRIPTION_PROVIDER || "openai").toLowerCase();
 const localTranscriptionPython = process.env.LOCAL_TRANSCRIPTION_PYTHON || "python";
 const localWhisperModel = process.env.LOCAL_WHISPER_MODEL || "small";
@@ -154,6 +167,11 @@ function emptyStore() {
         autoImportIntervalMinutes: 60,
         autoImportUsername: "",
         autoImportResultsLimit: 3,
+        metadataRefreshEnabled: true,
+        metadataRefreshIntervalDays: 7,
+        metadataRefreshBatchSize: 3,
+        lastMetadataRefreshAt: "",
+        lastMetadataRefreshStatus: "",
         lastAutoImportAt: "",
         lastAutoImportStatus: ""
       },
@@ -198,6 +216,11 @@ function normalizeStore(store) {
         autoImportIntervalMinutes: 60,
         autoImportUsername: "",
         autoImportResultsLimit: 3,
+        metadataRefreshEnabled: true,
+        metadataRefreshIntervalDays: 7,
+        metadataRefreshBatchSize: 3,
+        lastMetadataRefreshAt: "",
+        lastMetadataRefreshStatus: "",
         lastAutoImportAt: "",
         lastAutoImportStatus: "",
         ...(store.integrations?.apify || {})
@@ -305,11 +328,24 @@ function deriveReelTitle(item) {
   return caption.length > 120 ? `${caption.slice(0, 117)}...` : caption;
 }
 
+const HOOK_LABELS = [
+  "Direct Hook", "Question Hook", "Curiosity Gap", "Negative Hook", "Positive Promise",
+  "Story Opening", "Pattern Interrupt", "Social Proof", "Authority Hook", "Observation Hook",
+  "Myth Busting", "Controversial Hook", "News / Announcement", "Data Hook", "Identity Hook",
+  "Command Hook", "Emotional Hook", "Aspiration Hook", "Visual Hook", "Shock Hook",
+  "Demonstration Hook", "Transformation Hook", "Contrarian Hook", "Speed Hook",
+];
+
 function canonicalizeHook(value, fallback = "Question Hook") {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return fallback;
+  const exact = HOOK_LABELS.find((label) => label.toLowerCase() === text.toLowerCase());
+  if (exact) return exact;
   const normalized = text.toLowerCase();
 
+  if (/(he.?s back|he’s back|returns as a titan|startup fest|ready to discover|announc|launch|launched|introducing|new update|excited to announce)/.test(normalized)) {
+    return "News / Announcement";
+  }
   if (/(^|\b)(question|rhetorical|why|what if|have you|are you|would you|ask)(\b|$)/.test(normalized)) return "Question Hook";
   if (/(curiosity|open loop|gap|withhold|wait until|nobody expected|changed everything)/.test(normalized)) return "Curiosity Gap";
   if (/(^|\b)(direct hook|direct|straight to value|no delay|let me show|here's how|explainer|framework|how to)(\b|$)/.test(normalized)) return "Direct Hook";
@@ -335,7 +371,7 @@ function canonicalizeHook(value, fallback = "Question Hook") {
   if (/(contrarian|unpopular|against common advice|you don't need)/.test(normalized)) return "Contrarian Hook";
   if (/(speed|quick|30 seconds|5 minutes|time compression|fast)/.test(normalized)) return "Speed Hook";
 
-  return fallback;
+  return HOOK_LABELS.includes(fallback) ? fallback : "Question Hook";
 }
 
 const STRATEGY_LABELS = [
@@ -399,7 +435,15 @@ function deriveStrategy(reel) {
 }
 
 function deriveHook(item) {
-  return canonicalizeHook(pickValue(item, ["hook", "opening", "hookType", "contentDetails.hook", "analysis.hook"], "Question Hook"));
+  const explicit = pickValue(item, ["hook", "hookType", "contentDetails.hook", "analysis.hook"], "");
+  const explicitHook = canonicalizeHook(explicit, "");
+  if (explicitHook && HOOK_LABELS.includes(explicitHook)) return explicitHook;
+
+  const openingText = [
+    pickValue(item, ["opening", "openingLine", "caption", "text", "description", "postText", "title"], ""),
+    pickValue(item, ["transcript", "videoTranscript"], "")
+  ].filter(Boolean).join(" ").slice(0, 900);
+  return canonicalizeHook(openingText, "Question Hook");
 }
 
 async function readStore() {
@@ -521,6 +565,60 @@ function secureSecretStatus(value) {
   return value ? "configured" : "missing";
 }
 
+function loadBusinessVideos() {
+  try {
+    const payload = JSON.parse(readFileSync(businessVideosPath, "utf8"));
+    const videos = Array.isArray(payload.videos) ? payload.videos : [];
+    return {
+      ...payload,
+      videos: videos.map((video) => ({
+        id: String(video.id || video.postUrl || `business-${Math.random().toString(36).slice(2, 8)}`),
+        title: String(video.title || "Untitled business reel"),
+        caption: String(video.caption || ""),
+        creator: String(video.creator || "Unknown creator"),
+        username: String(video.username || ""),
+        followers: Number(video.followers || 0),
+        postUrl: String(video.postUrl || ""),
+        thumbnailUrl: String(video.thumbnailUrl || ""),
+        mediaUrl: String(video.mediaUrl || ""),
+        plays: Number(video.plays || 0),
+        likes: Number(video.likes || 0),
+        comments: Number(video.comments || 0),
+        engagementRate: Number(video.engagementRate || 0),
+        duration: Number(video.duration || 0),
+        publishedAt: String(video.publishedAt || ""),
+        keyword: String(video.keyword || "business ideas"),
+        mediaType: String(video.mediaType || "Reel"),
+        hook: String(video.hook || "Business idea"),
+        opportunity: String(video.opportunity || "business model"),
+        hashtags: Array.isArray(video.hashtags) ? video.hashtags.map((tag) => String(tag || "")).filter(Boolean).slice(0, 8) : [],
+        transcript: String(video.transcript || ""),
+        timestampedTranscript: Array.isArray(video.timestampedTranscript)
+          ? video.timestampedTranscript.map((segment, index) => ({
+              index: Number(segment?.index || index + 1),
+              time: String(segment?.time || ""),
+              start: Number(segment?.start || 0),
+              end: Number(segment?.end || 0),
+              text: String(segment?.text || "")
+            })).filter((segment) => segment.text)
+          : [],
+        transcriptSource: String(video.transcriptSource || ""),
+        transcriptStatus: String(video.transcriptStatus || ""),
+        transcriptUpdatedAt: String(video.transcriptUpdatedAt || ""),
+        scriptSummary: Array.isArray(video.scriptSummary) ? video.scriptSummary.map((line) => String(line || "")).filter(Boolean).slice(0, 8) : []
+      }))
+    };
+  } catch {
+    return {
+      source: "",
+      exportedAt: "",
+      keyword: "business ideas",
+      summary: { totalVideos: 0, topPlays: 0, medianDuration: 0, topHashtags: [] },
+      videos: []
+    };
+  }
+}
+
 function publicStore(store) {
   const apify = apifyConfig(store);
   const brightData = brightDataConfig(store);
@@ -633,12 +731,21 @@ function normalizeReel(reel) {
     : [];
   const transcript = String(reel.transcript || timestampedTranscript.map((segment) => segment.text).join("\n") || "");
   const pillar = normalizePillarLabel(reel.pillar, "General");
+  const announcementText = [
+    reel.title,
+    reel.caption,
+    transcript,
+    scriptSummary.join(" ")
+  ].filter(Boolean).join(" ").toLowerCase();
+  const hook = /(he.?s back|he’s back|returns as a titan|startup fest|ready to discover|announc|launch|launched|introducing|new update|excited to announce)/.test(announcementText)
+    ? "News / Announcement"
+    : canonicalizeHook(reel.hook || "Question Hook");
   return {
     id: String(reel.id || `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: String(reel.title || "Untitled reel"),
     platform: String(reel.platform || "instagram"),
     pillar,
-    hook: canonicalizeHook(reel.hook || "Question Hook"),
+    hook,
     strategy: deriveStrategy({ ...reel, transcript, timestampedTranscript, scriptSummary }),
     format: String(reel.format || "Short video"),
     postedAt: String(reel.postedAt || new Date().toISOString()),
@@ -671,7 +778,88 @@ function normalizeReel(reel) {
     sourceHandle: String(reel.sourceHandle || ""),
     collabLabel: String(reel.collabLabel || ""),
     sourceFollowers: Number(reel.sourceFollowers || 0),
-    sourceName: String(reel.sourceName || "")
+    sourceName: String(reel.sourceName || ""),
+    lastMetadataRefreshAt: String(reel.lastMetadataRefreshAt || "")
+  };
+}
+
+function instagramPostKeyFromUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const shortcodeMatch = text.match(/\/(p|reel|tv)\/([^/?#]+)/i);
+  if (shortcodeMatch) {
+    return `${shortcodeMatch[1].toLowerCase()}:${shortcodeMatch[2].toLowerCase()}`;
+  }
+  try {
+    const parsed = new URL(text);
+    return `url:${parsed.origin}${parsed.pathname}`.toLowerCase();
+  } catch {
+    return `url:${text.toLowerCase()}`;
+  }
+}
+
+function reelIdentityKeys(reel) {
+  const keys = new Set();
+  const id = String(reel?.id || "").trim();
+  if (id) keys.add(`id:${id.toLowerCase()}`);
+
+  const shortcode = String(
+    pickValue(reel, ["shortCode", "shortcode", "short_code"], "")
+  ).trim();
+  if (shortcode) keys.add(`shortcode:${shortcode.toLowerCase()}`);
+
+  [
+    reel?.url,
+    reel?.postUrl,
+    reel?.inputUrl,
+    reel?.permalink
+  ].forEach((value) => {
+    const key = instagramPostKeyFromUrl(value);
+    if (key) keys.add(key);
+  });
+
+  return [...keys];
+}
+
+function mergeReelRecords(current, incoming) {
+  const currentReel = normalizeReel(current);
+  const incomingReel = normalizeReel(incoming);
+
+  const keepExistingAnalysis = hasTranscriptPayload(currentReel);
+  const incomingHasAnalysis = hasTranscriptPayload(incomingReel);
+  const preserveExistingTaxonomy = keepExistingAnalysis && !incomingHasAnalysis;
+
+  const merged = normalizeReel({
+    ...currentReel,
+    ...incomingReel,
+    hook: preserveExistingTaxonomy ? currentReel.hook : incomingReel.hook,
+    pillar: preserveExistingTaxonomy ? currentReel.pillar : incomingReel.pillar,
+    strategy: preserveExistingTaxonomy ? currentReel.strategy : incomingReel.strategy,
+    transcript: incomingHasAnalysis ? incomingReel.transcript : currentReel.transcript,
+    timestampedTranscript: incomingHasAnalysis && incomingReel.timestampedTranscript.length
+      ? incomingReel.timestampedTranscript
+      : currentReel.timestampedTranscript,
+    transcriptSource: incomingHasAnalysis ? incomingReel.transcriptSource : currentReel.transcriptSource,
+    scriptSummary: incomingHasAnalysis && incomingReel.scriptSummary.length ? incomingReel.scriptSummary : currentReel.scriptSummary,
+    sceneBreakdown: incomingHasAnalysis && incomingReel.sceneBreakdown.length ? incomingReel.sceneBreakdown : currentReel.sceneBreakdown,
+    language: incomingReel.language || currentReel.language,
+    audioType: incomingReel.audioType || currentReel.audioType,
+    tone: incomingReel.tone || currentReel.tone,
+    productionType: incomingReel.productionType || currentReel.productionType,
+    cta: incomingReel.cta || currentReel.cta,
+    analysisStatus: incomingHasAnalysis ? incomingReel.analysisStatus : keepExistingAnalysis ? currentReel.analysisStatus : incomingReel.analysisStatus,
+    analysisError: incomingHasAnalysis ? incomingReel.analysisError : currentReel.analysisError,
+    analysisUpdatedAt: incomingHasAnalysis ? incomingReel.analysisUpdatedAt : currentReel.analysisUpdatedAt,
+    analysisProvider: incomingHasAnalysis ? incomingReel.analysisProvider : currentReel.analysisProvider,
+    lastMetadataRefreshAt: incomingReel.lastMetadataRefreshAt || currentReel.lastMetadataRefreshAt
+  });
+
+  if (!preserveExistingTaxonomy) return merged;
+  return {
+    ...merged,
+    hook: currentReel.hook,
+    pillar: currentReel.pillar,
+    strategy: currentReel.strategy
   };
 }
 
@@ -727,6 +915,194 @@ function normalizeCompetitorProfile(profile) {
     aliases: aliases
       .map((value) => String(value || "").replace(/^@/, "").trim().toLowerCase())
       .filter(Boolean)
+  };
+}
+
+const COMPETITOR_PROFILE_STATS = [
+  {
+    name: "Nikhil Kamath",
+    handles: ["nikhilkamathcio"],
+    followersExact: 1649382,
+    followersDisplay: "1.65M",
+    engagementRatePercent: 2.87,
+    followerGrowth30dPercent: 0.93,
+    snapshotDate: "2026-08-03",
+    confidence: "high"
+  },
+  {
+    name: "Ritesh Agarwal",
+    handles: ["riteshagar"],
+    followersExact: 1244667,
+    followersDisplay: "1.24M",
+    engagementRatePercent: 2.47,
+    followerGrowth30dPercent: -0.73,
+    snapshotDate: "2026-07-29",
+    confidence: "high"
+  },
+  {
+    name: "Deepinder Goyal",
+    handles: ["deepigoyal"],
+    followersExact: null,
+    followersDisplay: "409K",
+    engagementRatePercent: null,
+    followerGrowth30dPercent: null,
+    snapshotDate: "2026-08-05",
+    confidence: "high"
+  },
+  {
+    name: "Deepak Wadhwa",
+    handles: ["deepakwadhwa.official", "deepakwadhwa"],
+    followersExact: 1488822,
+    followersDisplay: "1.49M",
+    engagementRatePercent: 1.73,
+    followerGrowth30dPercent: -0.77,
+    snapshotDate: "2026-07-26",
+    confidence: "high"
+  },
+  {
+    name: "Deepak Bajwa",
+    handles: [],
+    followersExact: null,
+    followersDisplay: null,
+    engagementRatePercent: null,
+    followerGrowth30dPercent: null,
+    snapshotDate: null,
+    confidence: "low",
+    possibleDuplicateOf: "Deepak Wadhwa"
+  },
+  {
+    name: "Kunal Shah",
+    handles: ["kunalb11"],
+    followersExact: null,
+    followersDisplay: "244K",
+    engagementRatePercent: 3.4,
+    followerGrowth30dPercent: null,
+    snapshotDate: "2026-08-05",
+    confidence: "medium"
+  },
+  {
+    name: "Varun Mayya",
+    handles: ["thevarunmayya", "varunmayya"],
+    followersExact: 1278366,
+    followersDisplay: "1.28M",
+    engagementRatePercent: 2.63,
+    followerGrowth30dPercent: -0.11,
+    snapshotDate: "2026-08-05",
+    confidence: "high"
+  },
+  {
+    name: "Ankur Warikoo",
+    handles: ["ankurwarikoo"],
+    followersExact: 4017443,
+    followersDisplay: "4.02M",
+    engagementRatePercent: 2.63,
+    followerGrowth30dPercent: 0.95,
+    snapshotDate: "2026-08-04",
+    confidence: "high"
+  },
+  {
+    name: "Ranveer Allahbadia",
+    handles: ["beerbiceps", "ranveerallahbadia"],
+    followersExact: 4202846,
+    followersDisplay: "4.20M",
+    engagementRatePercent: 5.48,
+    followerGrowth30dPercent: -0.65,
+    snapshotDate: "2026-08-03",
+    confidence: "high"
+  },
+  {
+    name: "Finance With Sharan",
+    handles: ["financewithsharan"],
+    followersExact: 2945458,
+    followersDisplay: "2.95M",
+    engagementRatePercent: 1.02,
+    followerGrowth30dPercent: -0.49,
+    snapshotDate: "2026-08-03",
+    confidence: "high"
+  },
+  {
+    name: "Raj Shamani",
+    handles: ["rajshamani"],
+    followersExact: 9671290,
+    followersDisplay: "9.67M",
+    engagementRatePercent: 2.96,
+    followerGrowth30dPercent: 3.07,
+    snapshotDate: "2026-08-05",
+    confidence: "high"
+  },
+  {
+    name: "Aman Gupta",
+    handles: ["boatxaman"],
+    followersExact: 1724940,
+    followersDisplay: "1.72M",
+    engagementRatePercent: 2.84,
+    followerGrowth30dPercent: 0,
+    snapshotDate: "2026-08-05",
+    confidence: "high"
+  }
+];
+
+function profileStatKey(value) {
+  return String(value || "")
+    .replace(/^@/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function parseCompactDisplayNumber(value) {
+  const text = String(value || "").trim().toUpperCase();
+  if (!text) return 0;
+  const number = Number(text.replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(number)) return 0;
+  if (text.endsWith("M")) return Math.round(number * 1_000_000);
+  if (text.endsWith("K")) return Math.round(number * 1_000);
+  return Math.round(number);
+}
+
+function competitorProfileStatFor(profile, legacy) {
+  const keys = new Set([
+    profileStatKey(profile?.handle),
+    profileStatKey(profile?.name),
+    profileStatKey(legacy?.name),
+    profileStatKey(legacy?.canonicalHandle)
+  ]);
+  (profile?.aliases || []).forEach((alias) => keys.add(profileStatKey(alias)));
+  return COMPETITOR_PROFILE_STATS.find((stat) => {
+    const statKeys = new Set([
+      profileStatKey(stat.name),
+      ...(stat.handles || []).map(profileStatKey)
+    ]);
+    return [...keys].some((key) => key && statKeys.has(key));
+  }) || null;
+}
+
+function enrichCompetitorDisplayStats(row, profile, legacy) {
+  const stat = competitorProfileStatFor(profile, legacy);
+  if (!stat) return row;
+  const followers = Number(row.followers || 0) || Number(stat.followersExact || 0) || parseCompactDisplayNumber(stat.followersDisplay);
+  const engagementRate = Number(row.engagementRate || 0) || Number(stat.engagementRatePercent || 0);
+  const monthlyGrowth = Number(row.monthlyGrowth || 0) || Number(stat.followerGrowth30dPercent || 0);
+  const followersLabel = Number(row.followers || 0)
+    ? row.followersLabel
+    : (stat.followersDisplay || (followers ? fmtCompact(followers) : row.followersLabel));
+  const engagementRateLabel = Number(row.engagementRate || 0)
+    ? row.engagementRateLabel
+    : (stat.engagementRatePercent === null || stat.engagementRatePercent === undefined ? row.engagementRateLabel : fmtPercent(stat.engagementRatePercent, 2));
+  const monthlyGrowthLabel = Number(row.monthlyGrowth || 0)
+    ? row.monthlyGrowthLabel
+    : (stat.followerGrowth30dPercent === null || stat.followerGrowth30dPercent === undefined ? row.monthlyGrowthLabel : fmtSignedPercent(stat.followerGrowth30dPercent, 2));
+  return {
+    ...row,
+    followers,
+    engagementRate,
+    monthlyGrowth,
+    followersLabel,
+    engagementRateLabel,
+    monthlyGrowthLabel,
+    profileStatsSnapshotDate: stat.snapshotDate || "",
+    profileStatsConfidence: stat.confidence || "",
+    possibleDuplicateOf: stat.possibleDuplicateOf || ""
   };
 }
 
@@ -1005,10 +1381,11 @@ function inferCreatorIdentity(store) {
   const manualName = String(store.creator?.name || "").trim();
   const manualNiche = String(store.creator?.niche || "").trim();
   const manualFollowers = Number(store.creator?.followers || 0);
+  const creatorOverride = CREATOR_FOLLOWER_OVERRIDES.get(topHandle) || CREATOR_FOLLOWER_OVERRIDES.get(String(store.creator?.handle || "").trim().toLowerCase()) || null;
   const inferredFollowers = reels
     .filter((reel) => String(reel.sourceHandle || "").trim().toLowerCase() === topHandle)
     .reduce((max, reel) => Math.max(max, Number(reel.sourceFollowers || 0)), 0);
-  const followers = manualFollowers || inferredFollowers || 0;
+  const followers = manualFollowers || Number(creatorOverride?.followers || 0) || inferredFollowers || 0;
   const derivedName = manualName || titleCase(topHandle || "Creator OS");
   const derivedNiche = manualNiche || [...new Set([...dominantPillars, ...topTopics])].slice(0, 3).join(", ") || "Creator analytics";
   return {
@@ -1016,7 +1393,8 @@ function inferCreatorIdentity(store) {
     niche: derivedNiche,
     handle: String(store.creator?.handle || topHandle || "").trim().toLowerCase(),
     followers,
-    followersLabel: followers ? fmtCompact(followers) : "0"
+    followersLabel: followers ? (creatorOverride?.followersLabel || fmtCompact(followers)) : "0",
+    followersSource: creatorOverride?.source || ""
   };
 }
 
@@ -1426,6 +1804,10 @@ function reelMatchesCompetitorProfile(reel, profile) {
 
 function apifyConfig(store) {
   const config = store.integrations?.apify || {};
+  const envResultsLimitSet = process.env.APIFY_AUTO_IMPORT_RESULTS_LIMIT !== undefined && process.env.APIFY_AUTO_IMPORT_RESULTS_LIMIT !== "";
+  const envIntervalSet = process.env.APIFY_AUTO_IMPORT_INTERVAL_MINUTES !== undefined && process.env.APIFY_AUTO_IMPORT_INTERVAL_MINUTES !== "";
+  const envMetadataIntervalSet = process.env.APIFY_METADATA_REFRESH_INTERVAL_DAYS !== undefined && process.env.APIFY_METADATA_REFRESH_INTERVAL_DAYS !== "";
+  const envMetadataBatchSet = process.env.APIFY_METADATA_REFRESH_BATCH_SIZE !== undefined && process.env.APIFY_METADATA_REFRESH_BATCH_SIZE !== "";
   return {
     token: process.env.APIFY_TOKEN || config.token || "",
     mode: config.mode || "actor",
@@ -1435,9 +1817,14 @@ function apifyConfig(store) {
     datasetId: config.datasetId || "",
     input: config.input || {},
     autoImportEnabled: apifyAutoImportEnabledEnv || config.autoImportEnabled === true,
-    autoImportIntervalMinutes: Math.max(15, Number(config.autoImportIntervalMinutes || apifyAutoImportIntervalMinutesEnv || 60)),
+    autoImportIntervalMinutes: Math.max(15, Number(envIntervalSet ? apifyAutoImportIntervalMinutesEnv : (config.autoImportIntervalMinutes || 60))),
     autoImportUsername: apifyAutoImportUsernameEnv || String(config.autoImportUsername || "").replace(/^@/, "").trim().toLowerCase(),
-    autoImportResultsLimit: Math.max(1, Math.min(10, Number(config.autoImportResultsLimit || apifyAutoImportResultsLimitEnv || 3))),
+    autoImportResultsLimit: Math.max(1, Math.min(10, Number(envResultsLimitSet ? apifyAutoImportResultsLimitEnv : (config.autoImportResultsLimit || 3)))),
+    metadataRefreshEnabled: apifyMetadataRefreshEnabledEnv || config.metadataRefreshEnabled === true,
+    metadataRefreshIntervalDays: Math.max(1, Math.min(30, Number(envMetadataIntervalSet ? apifyMetadataRefreshIntervalDaysEnv : (config.metadataRefreshIntervalDays || 7)))),
+    metadataRefreshBatchSize: Math.max(1, Math.min(15, Number(envMetadataBatchSet ? apifyMetadataRefreshBatchSizeEnv : (config.metadataRefreshBatchSize || 3)))),
+    lastMetadataRefreshAt: String(config.lastMetadataRefreshAt || ""),
+    lastMetadataRefreshStatus: String(config.lastMetadataRefreshStatus || ""),
     lastAutoImportAt: String(config.lastAutoImportAt || ""),
     lastAutoImportStatus: String(config.lastAutoImportStatus || "")
   };
@@ -1668,6 +2055,93 @@ function escapeXml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&#x26;", "&")
+    .replaceAll("&#38;", "&");
+}
+
+function extractInstagramPageThumbnail(html) {
+  const source = String(html || "");
+  const patterns = [
+    /<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i,
+    /<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i,
+    /<meta[^>]+property="og:image:secure_url"[^>]+content="([^"]+)"/i,
+    /<meta[^>]+content="([^"]+)"[^>]+property="og:image:secure_url"/i,
+    /"display_url":"([^"]+)"/i,
+    /"thumbnail_src":"([^"]+)"/i,
+    /"display_resources":\[\{"src":"([^"]+)"/i
+  ];
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (!match?.[1]) continue;
+    return decodeHtmlEntities(String(match[1]).replaceAll("\\u0026", "&").replaceAll("\\/", "/"));
+  }
+  return "";
+}
+
+async function fetchInstagramPageThumbnailUrl(postUrl) {
+  if (!postUrl || !/^https:\/\/www\.instagram\.com\/p\//i.test(postUrl)) return "";
+  try {
+    const pageResponse = await fetch(postUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: "https://www.instagram.com/"
+      }
+    });
+    if (!pageResponse.ok) return "";
+    return extractInstagramPageThumbnail(await pageResponse.text());
+  } catch {
+    return "";
+  }
+}
+
+async function fetchRemoteThumbnailBuffer(thumbnailUrl) {
+  if (!thumbnailUrl || !/^https:\/\/(?:[^/]+\.)*(?:instagram\.com|cdninstagram\.com|fbcdn\.net)\//i.test(thumbnailUrl)) {
+    return null;
+  }
+  try {
+    const imageResponse = await fetch(thumbnailUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: "https://www.instagram.com/",
+        Origin: "https://www.instagram.com"
+      }
+    });
+    if (!imageResponse.ok) return null;
+    return {
+      buffer: Buffer.from(await imageResponse.arrayBuffer()),
+      contentType: imageResponse.headers.get("content-type") || "image/jpeg"
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function prewarmThumbnailCache(reels = [], limit = 4) {
+  const queue = (Array.isArray(reels) ? reels : [])
+    .map(normalizeReel)
+    .filter((reel) => reel.id && reel.thumbnailUrl)
+    .sort((left, right) => new Date(right.postedAt || 0) - new Date(left.postedAt || 0))
+    .slice(0, limit);
+
+  if (!queue.length) return;
+  await mkdir(thumbnailCacheDir, { recursive: true }).catch(() => {});
+  for (const reel of queue) {
+    const cachePath = thumbnailCachePath(reel.id);
+    const cached = await readFile(cachePath).catch(() => null);
+    if (cached) continue;
+    const fetched = await fetchRemoteThumbnailBuffer(reel.thumbnailUrl);
+    if (!fetched?.buffer?.length) continue;
+    await writeFile(cachePath, fetched.buffer).catch(() => {});
+  }
+}
+
 function parseRssItems(xml, topic, query) {
   const items = [...String(xml || "").matchAll(/<item\b[\s\S]*?<\/item>/gi)];
   return items.map((match, index) => {
@@ -1871,7 +2345,7 @@ function computeCompetitorRows(store) {
           const postsPerWeek = Number(legacy?.postsPerWeekSeed || 0);
           const avgViews = Number(legacy?.avgViewsSeed || 0);
           const topHook = canonicalizeHook(legacy?.topHookSeed || legacy?.warning || "Question Hook");
-          return {
+          return enrichCompetitorDisplayStats({
             name: profile.name || legacy?.name || profile.handle,
             angle: profile.angle || legacy?.angle || "",
             canonicalHandle: handle,
@@ -1895,7 +2369,7 @@ function computeCompetitorRows(store) {
             monthlyGrowthLabel: fmtSignedPercent(Number(legacy?.monthlyGrowth || 0), 1),
             followersLabel: fmtCompact(followers),
             engagementRateLabel: fmtPercent(Number(legacy?.engagementRate || 0), 1)
-          };
+          }, profile, legacy);
         })
       : (store.competitors || []).map(normalizeCompetitor).map((competitor) => ({
           ...competitor,
@@ -1983,7 +2457,7 @@ function computeCompetitorRows(store) {
               postedAtLabel: new Date(reel.postedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
             }))
         : (Array.isArray(legacy?.reels) ? legacy.reels : []);
-      return {
+      return enrichCompetitorDisplayStats({
         name: profile.name || latest?.sourceName || profile.handle,
         angle: profile.angle,
         canonicalHandle: handle,
@@ -2007,12 +2481,13 @@ function computeCompetitorRows(store) {
         monthlyGrowthLabel: fmtSignedPercent(monthlyGrowth, 1),
         followersLabel: fmtCompact(followers),
         engagementRateLabel: fmtPercent(engagementRate, 1)
-      };
+      }, profile, legacy);
     })
     .sort((left, right) => right.monthlyGrowth - left.monthlyGrowth);
 }
 
 function computeDashboard(store, query) {
+  const businessVideos = loadBusinessVideos();
   const reels = store.reels.map(normalizeReel);
   const creatorHandle = inferPrimaryCreatorHandle(store);
   const creatorReels = creatorHandle
@@ -2155,6 +2630,7 @@ function computeDashboard(store, query) {
     competitors: competitorRows,
     competitorReels: (store.competitorReels || []).map(normalizeReel),
     news,
+    businessVideos,
     charts: {
       trend: series,
       hooks: hookStats,
@@ -2332,8 +2808,19 @@ function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = nu
   ].filter(Boolean).join(" ");
   const queryTokens = chatKeywords(queryText);
   const topIds = new Set((dashboard.topReels || []).slice(0, 8).map((reel) => String(reel.id)));
+  const competitorMatch = matchedCompetitorFromPrompt(prompt, dashboard);
+  const competitorHandle = String(competitorMatch?.canonicalHandle || competitorMatch?.handle || "").replace(/^@/, "").trim().toLowerCase();
+  const currentRangeDays = clamp(Number(dashboard.filters?.range || 365), 1, 365);
+  const rangeStart = daysAgo(currentRangeDays - 1);
+  const rangeEnd = now();
+  const creatorReels = Array.isArray(dashboard.posts) ? dashboard.posts : [];
+  const competitorReels = (Array.isArray(dashboard.competitorReels) ? dashboard.competitorReels : [])
+    .filter((reel) => {
+      const postedAt = new Date(reel.postedAt);
+      return !Number.isNaN(postedAt.getTime()) && postedAt >= rangeStart && postedAt <= rangeEnd;
+    });
 
-  return (store.reels || [])
+  return [...creatorReels, ...competitorReels]
     .map(normalizeReel)
     .map((reel) => {
       const transcript = reelTranscriptText(reel);
@@ -2356,6 +2843,7 @@ function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = nu
       const keywordScore = queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
       const score = keywordScore * 10
         + (topIds.has(String(reel.id)) ? 8 : 0)
+        + (competitorHandle && String(reel.sourceHandle || "").replace(/^@/, "").trim().toLowerCase() === competitorHandle ? 16 : 0)
         + transcriptSnippetScore(openingLine, queryTokens) * 6
         + transcriptSnippetScore(matchedSnippet, queryTokens) * 8
         + transcriptStrength(reel) * 5
@@ -2367,18 +2855,21 @@ function buildChatTranscriptContext(store, dashboard, prompt, selectedStory = nu
         hook: reel.hook,
         pillar: reel.pillar,
         strategy: reel.strategy,
+        sourceHandle: reel.sourceHandle,
+        sourceName: reel.sourceName,
         views: reel.views,
         engagementRate: reel.engagementRate,
         openingLine,
         matchedSnippet: matchedSnippet || openingLine,
         transcript: compactChatText(transcript, 320),
         transcriptStrength: transcriptStrength(reel),
+        rangeDays: currentRangeDays,
         score
       };
     })
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
-    .slice(0, 8)
+    .slice(0, 10)
     .map(({ score, ...item }) => item);
 }
 
@@ -2396,6 +2887,48 @@ function transcriptSourceReels(transcriptContext = [], limit = 6) {
     }));
 }
 
+function isGenericTranscriptPillar(value) {
+  const pillar = String(value || "").trim().toLowerCase();
+  return !pillar || pillar === "general" || pillar === "imported";
+}
+
+function transcriptItemsCompatible(primary, candidate) {
+  if (!primary || !candidate) return false;
+  if (String(primary.id || "") === String(candidate.id || "")) return false;
+  const primaryHook = String(primary.hook || "").trim().toLowerCase();
+  const candidateHook = String(candidate.hook || "").trim().toLowerCase();
+  const primaryPillar = String(primary.pillar || "").trim().toLowerCase();
+  const candidatePillar = String(candidate.pillar || "").trim().toLowerCase();
+  const primaryStrategy = String(primary.strategy || "").trim().toLowerCase();
+  const candidateStrategy = String(candidate.strategy || "").trim().toLowerCase();
+  return Boolean(
+    (primaryHook && candidateHook && primaryHook === candidateHook)
+    || (
+      primaryPillar
+      && candidatePillar
+      && !isGenericTranscriptPillar(primaryPillar)
+      && !isGenericTranscriptPillar(candidatePillar)
+      && primaryPillar === candidatePillar
+    )
+    || (primaryStrategy && candidateStrategy && primaryStrategy === candidateStrategy)
+  );
+}
+
+function selectTranscriptPattern(transcriptContext = []) {
+  const items = Array.isArray(transcriptContext) ? transcriptContext.filter(Boolean) : [];
+  const lead = items[0] || null;
+  const support = lead
+    ? items.find((item) => transcriptItemsCompatible(lead, item)) || null
+    : null;
+  return { lead, support };
+}
+
+function transcriptPatternPillar(lead, context) {
+  const leadPillar = String(lead?.pillar || "").trim();
+  if (leadPillar && !isGenericTranscriptPillar(leadPillar)) return leadPillar;
+  return "one specific lane";
+}
+
 function chatGroundingMeta(transcriptContext = [], options = {}) {
   if (options.analyticsOnly) {
     return { grounding: "analytics", sourceReels: [] };
@@ -2405,6 +2938,19 @@ function chatGroundingMeta(transcriptContext = [], options = {}) {
     grounding: sourceReels.length ? "transcript" : "analytics",
     sourceReels
   };
+}
+
+function confidenceBand(sampleSize = 0) {
+  const count = Math.max(0, Number(sampleSize || 0));
+  if (count >= 50) return { label: "High", reason: `${count} matching examples` };
+  if (count >= 15) return { label: "Medium", reason: `${count} matching examples` };
+  if (count >= 5) return { label: "Low", reason: `${count} matching examples` };
+  return { label: "Very low", reason: count ? `${count} matching examples` : "insufficient matching examples" };
+}
+
+function transcriptConfidenceLine(transcriptContext = []) {
+  const confidence = confidenceBand(Array.isArray(transcriptContext) ? transcriptContext.length : 0);
+  return `Confidence: ${confidence.label} confidence. Reason: ${confidence.reason}.`;
 }
 
 function isMonthlySummaryRequest(prompt) {
@@ -2456,11 +3002,69 @@ function isNewsScriptFollowUp(prompt, selectedStory = null) {
 function isNextPostRequest(prompt) {
   const query = String(prompt || "").trim().toLowerCase();
   if (!query) return false;
+  if (/\b(script|write|ready-to-record|ready to record|full script|make it into a reel)\b/.test(query)) {
+    return false;
+  }
   return (query.includes("next post") || query.includes("what should i post next") || query.includes("post next"))
     || (query.includes("next reel") && !query.includes("news"))
     || query.includes("next-post planner")
     || query.includes("build my next post")
     || query.includes("plan my next post");
+}
+
+function isContentIdeasRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return /\b(ideas?|content ideas?|post ideas?|reel ideas?)\b/.test(query)
+    && (/\b(20|twenty|10|ten|list|give|generate|based on|current hooks|pillars|transcripts?)\b/.test(query));
+}
+
+function isAllReelsAnalysisRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return /^(analyse|analyze)\s+all\s+my\s+reels$/.test(query)
+    || /^(analyse|analyze)\s+my\s+reels$/.test(query)
+    || (query.includes("all my reels") && (query.includes("analyse") || query.includes("analyze") || query.includes("breakdown")));
+}
+
+function isAllScriptsAnalysisRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return (/\b(analyse|analyze|audit|breakdown|review)\b/.test(query)
+    && /\b(all\s+)?(scripts?|transcripts?|content scripts?)\b/.test(query));
+}
+
+function isOutshineStrategyRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return /\b(outshine|stand out|beat competitors?|improve my content|what i have to do|what should i do|see my content)\b/.test(query)
+    && /\b(content|reels?|competitors?|creator|strategy|outshine)\b/.test(query);
+}
+
+function isBestReelAnalysisRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase().replace(/[\\]+$/g, "");
+  if (!query) return false;
+  return (
+    (query.includes("best reel") || query.includes("bestest reel") || query.includes("top reel") || query.includes("best performing reel"))
+    && (query.includes("analyse") || query.includes("analyze") || query.includes("breakdown") || query.includes("audit"))
+  ) || /^(analyse|analyze)\s+my\s+best(est)?\s+reel$/.test(query);
+}
+
+function matchedCompetitorFromPrompt(prompt, dashboard) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return null;
+  return (dashboard.competitors || []).find((competitor) => {
+    const name = String(competitor.name || "").trim().toLowerCase();
+    const handle = String(competitor.canonicalHandle || competitor.handle || "").replace(/^@/, "").trim().toLowerCase();
+    return (name && query.includes(name)) || (handle && query.includes(handle));
+  }) || null;
+}
+
+function isCompetitorMomentumRequest(prompt, dashboard) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  const mentionsBreakdown = /\b(break down|breakdown|momentum|recent content|recent reels|content momentum|analy[sz]e)\b/.test(query);
+  return mentionsBreakdown && Boolean(matchedCompetitorFromPrompt(prompt, dashboard));
 }
 
 function isTranscriptStrategyRequest(prompt) {
@@ -2482,6 +3086,41 @@ function isTranscriptStrategyRequest(prompt) {
   return transcriptIntent && askIntent;
 }
 
+function shouldForceTranscriptRead(prompt, dashboard) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  if (!Array.isArray(dashboard?.transcriptContext) || !dashboard.transcriptContext.length) return false;
+  if (
+    isMonthlySummaryRequest(query)
+    || isWeeklyPlanRequest(query)
+    || isNewsScriptRequest(query, null)
+    || isAllReelsAnalysisRequest(query)
+    || isAllScriptsAnalysisRequest(query)
+    || isOutshineStrategyRequest(query)
+    || isBestReelAnalysisRequest(query)
+  ) return false;
+  if (/\b(transcript|transcribed|transcription|script summary|timestamped|scene-by-scene|scene by scene|caption lines)\b/.test(query)) {
+    return true;
+  }
+  if ((/\b(analyse|analyze|analysis|audit|breakdown|deep dive|detail|detailed)\b/.test(query))
+    && /\b(reel|reels|content)\b/.test(query)) {
+    return true;
+  }
+  if (matchedCompetitorFromPrompt(prompt, dashboard)
+    && /\b(analyse|analyze|analysis|audit|breakdown|transcript|script|hook)\b/.test(query)
+    && !/\b(momentum|growth|followers|positioning|radar)\b/.test(query)) {
+    return true;
+  }
+  return false;
+}
+
+function isFullScriptRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  return /\b(full script|write script|write a script|reel script|ready-to-record|make it into a reel|refine it|script bna|script bana|record)\b/.test(query)
+    || (query.includes("script") && /\b(good|better|refine|reel|works for me|past data|according)\b/.test(query));
+}
+
 function chatMonthlySummaryAnswer(dashboard) {
   const context = buildContextSummary(dashboard);
   const kpis = Array.isArray(dashboard.kpis) ? dashboard.kpis.slice(0, 6) : [];
@@ -2496,7 +3135,8 @@ function chatMonthlySummaryAnswer(dashboard) {
     topReel ? `Top content signal: "${compactChatText(topReel.title || topReel.caption, 120)}" led the set with ${topReel.viewsLabel || fmtCompact(topReel.views)} views. The repeatable pattern is ${topHook} inside ${topPillar}.` : `Top content signal: ${topHook} inside ${topPillar}.`,
     competitor ? `Competitor signal: ${competitor.name} is the key watchlist creator right now with ${competitor.monthlyGrowthLabel || "tracked"} momentum and ${competitor.bestFormat || "short video"} as the visible format.` : "",
     news ? `News signal: "${compactChatText(news.headline, 120)}" is the strongest live angle to convert into a topical reel.` : "",
-    "What to do next: publish 2 data-hook explainers, 1 founder/story reel, 1 topical news response, and 1 re-cut of the best opener pattern. Do not spread into new pillars until the current winners are exhausted."
+    "What to do next: publish 2 data-hook explainers, 1 founder/story reel, 1 topical news response, and 1 re-cut of the best opener pattern. Do not spread into new pillars until the current winners are exhausted.",
+    "Confidence: Medium confidence. Reason: this uses current dashboard winners, but not a single narrow content slice."
   ].filter(Boolean).join("\n\n");
 }
 
@@ -2514,7 +3154,8 @@ function chatWeeklyPlanAnswer(dashboard, transcriptContext = []) {
     "Wed: Competitor/news response. Take the strongest News Radar story and turn it into a direct-to-camera opinion.",
     "Thu: Re-cut winner. Reuse the best opening structure from the source transcript, but swap the example.",
     "Fri/Sat: High-conviction prediction. One strong claim, one proof point, one takeaway.",
-    "Measurement: judge the week by hook retention, saves/comments, and whether the first 3 seconds can stand alone as a headline."
+    "Measurement: judge the week by hook retention, saves/comments, and whether the first 3 seconds can stand alone as a headline.",
+    transcriptConfidenceLine(transcriptContext)
   ].join("\n\n");
 }
 
@@ -2526,26 +3167,28 @@ function selectedHookIndex(prompt) {
 }
 
 function transcriptStrategyFallbackAnswer(prompt, dashboard, transcriptContext = []) {
-  const lead = transcriptContext?.[0] || null;
-  const support = transcriptContext?.[1] || null;
+  const context = buildContextSummary(dashboard);
+  const { lead } = selectTranscriptPattern(transcriptContext);
   if (!lead) {
     return [
       "Transcript-backed analysis is not available yet.",
       "Import or analyze a few reels with transcripts first, then ask for ideas, hooks, script rewrites, or a reel audit."
     ].join("\n\n");
   }
-  const pillar = lead.pillar || dashboard.charts?.pillars?.[0]?.label || "your main pillar";
+  const pillar = transcriptPatternPillar(lead, context);
   const hook = lead.hook || dashboard.charts?.hooks?.[0]?.label || "direct hook";
   const opener = lead.openingLine || lead.matchedSnippet || lead.transcript || "Start with the strongest claim first.";
-  const supportLine = support?.matchedSnippet || lead.matchedSnippet || "";
+  const supportLine = lead.matchedSnippet && lead.matchedSnippet !== opener ? lead.matchedSnippet : "";
   return [
-    `Transcript pattern: "${lead.title}" is the closest reference. It opens with: "${compactChatText(opener, 170)}"`,
-    `Why it works: it starts specific, keeps the viewer inside ${pillar}, and uses a ${hook} instead of a generic intro.`,
-    "New idea 1: Turn the first line into a sharper contrarian claim, then explain the hidden reason in 3 beats.",
-    "New idea 2: Make a founder/business example reel using the same opening rhythm, but swap the proof point.",
-    "New idea 3: Use the same structure for a myth-vs-reality reel: myth, real reason, takeaway.",
-    supportLine ? `Line to borrow: "${compactChatText(supportLine, 170)}"` : "",
-    "Best next action: ask me for `write full script from this transcript pattern` and I will turn it into a ready-to-record reel."
+    "Transcript-backed analysis",
+    `Closest reference: "${lead.title}" is the strongest transcript match right now. It opens with "${compactChatText(opener, 170)}" and sits inside ${pillar} with a ${hook} packaging style.`,
+    `Why this pattern works: the reel gets to the point fast, removes confusion early, and sounds creator-native rather than over-explained. The opener creates immediate curiosity, then the body translates that curiosity into one concrete business or creator takeaway instead of five loose ideas.`,
+    supportLine ? `Best supporting line to borrow: "${compactChatText(supportLine, 170)}". This is useful because it shows the pace and sentence shape that already works in your own catalogue.` : "",
+    "What to copy: keep the first line highly specific, keep the second beat as the hidden mechanism, and keep the close opinionated. Do not turn the middle of the reel into general education.",
+    "What to avoid: do not stack multiple examples, do not switch lane mid-reel, and do not explain the point before the viewer feels the tension.",
+    "Idea directions: 1. A contrarian founder/business claim with one proof point. 2. A myth-vs-reality format inside the same topic lane. 3. A hidden-growth-mechanism breakdown using the same opener rhythm. 4. A competitor pattern teardown in your voice. 5. A re-cut of an old winner with a sharper first sentence.",
+    transcriptConfidenceLine(transcriptContext),
+    "Next action: ask for `write full script from this transcript pattern` or `audit this transcript line by line` and I will turn this into a much more concrete output."
   ].filter(Boolean).join("\n\n");
 }
 
@@ -2572,32 +3215,502 @@ function chatNewsAnswer(story, fallbackHeadline = "this story", preferredHookInd
     `Angle: ${angle}`,
     learnedPattern,
     `Script: ${hook} ${summary} Why this matters: ${whyItMatters} My take: ${takeaway} ${cta}`,
-    "Delivery: 35-45 sec, direct-to-camera, one bold text overlay in the first frame, tight cuts every 2-3 sec."
+    "Delivery: 35-45 sec, direct-to-camera, one bold text overlay in the first frame, tight cuts every 2-3 sec.",
+    transcriptConfidenceLine(transcriptContext),
+    "Next action: record this as a single-opinion reel, not a news summary."
   ].filter(Boolean).join("\n\n");
 }
 
 function chatNextPostAnswer(dashboard, transcriptContext = []) {
   const context = buildContextSummary(dashboard);
-  const lead = transcriptContext?.[0] || null;
-  const support = transcriptContext?.[1] || null;
+  const { lead } = selectTranscriptPattern(transcriptContext);
   const hook = lead?.hook || context.hookLeader?.label || "Question Hook";
-  const pillar = lead?.pillar || context.pillarLeader?.label || "General";
+  const pillar = transcriptPatternPillar(lead, context);
   const opener = lead?.openingLine || "Most people are missing the real reason this is happening.";
-  const supportingPhrase = support?.matchedSnippet || lead?.matchedSnippet || lead?.transcript || "";
-  const structure = [
-    `Start with this exact style of opener: "${opener}"`,
-    `Move into one sharp insight inside ${pillar.toLowerCase()} instead of broad education.`,
-    supportingPhrase ? `Use this transcript-style phrasing as your second beat: "${compactChatText(supportingPhrase, 150)}"` : "",
-    "Close with one practical takeaway or opinion, not a generic summary."
-  ].filter(Boolean);
+  const topic = reelTopicFromLead(lead, context.topReel?.title || "this founder story");
+  const scriptLines = buildWordForWordScript({
+    lead,
+    hook,
+    pillar,
+    topicHint: topic,
+    openerStyle: opener,
+    referenceLine: lead?.matchedSnippet || ""
+  });
   return [
-    "Next post planner",
-    `Hook: ${hook} with a first-line opener close to "${opener}"`,
-    `Angle: Stay in ${pillar} and make the post feel creator-native, specific, and fast to understand.`,
-    `Structure: ${structure.join(" ")}`,
-    "CTA: End with one clear takeaway and a soft follow/save prompt, not a hard sell.",
-    `Delivery: 30-45 sec, direct-to-camera, first frame text should land the claim immediately, publish near ${dashboard.insights?.[3]?.title || "your highest-scoring time slot"}.`
+    "Next post package",
+    `Angle: Build the next post around ${topic}. Use a ${hook} opener and keep it inside ${pillar}.`,
+    "",
+    "Opening hook options",
+    `1. ${opener}`,
+    `2. Most people will miss the real business lesson inside ${compactChatText(topic, 80)}.`,
+    `3. This looks like a simple story, but it shows exactly how niche markets are built.`,
+    "",
+    "Final reel script",
+    `Hook (0-3s): ${scriptLines[0]}`,
+    `Beat 1 (3-10s): ${scriptLines[1]}`,
+    `Beat 2 (10-22s): ${scriptLines[2]}`,
+    `Beat 3 (22-35s): ${scriptLines[3]}`,
+    `Close (35-45s): ${scriptLines[4]}`,
+    "",
+    "Caption",
+    `The best founder stories are not just inspiring. They show you where a niche is quietly getting built. ${compactChatText(topic, 120)} is one of those examples.`,
+    "",
+    "CTA",
+    "Save this if you want more business breakdowns built from real creator patterns.",
+    "",
+    "Why this should work",
+    `It copies your saved transcript rhythm: a specific first line, one clear founder/business insight, and a practical close. It avoids switching into a second unrelated story mid-reel.`,
+    `Best posting window: ${dashboard.insights?.[3]?.title || "your highest-scoring time slot"}.`,
+    transcriptConfidenceLine(transcriptContext)
   ].join("\n\n");
+}
+
+function extractDraftForScript(prompt) {
+  const text = compactChatText(prompt, 2600);
+  const markers = [
+    "im thinking to reel this",
+    "make it into a reel script",
+    "refine it",
+    "write full script",
+    "script bnao",
+    "script bana"
+  ];
+  let draft = text;
+  for (const marker of markers) {
+    const index = draft.toLowerCase().indexOf(marker);
+    if (index > 80) draft = draft.slice(0, index).trim();
+  }
+  return draft || text;
+}
+
+function normalizeChatHistory(history = []) {
+  return (Array.isArray(history) ? history : [])
+    .map((entry) => ({
+      role: entry?.role === "assistant" ? "assistant" : "user",
+      text: String(entry?.text || "").slice(0, 4000).trim()
+    }))
+    .filter((entry) => entry.text);
+}
+
+function previousHistoryMessage(history = [], role = "user", currentPrompt = "") {
+  const cleanPrompt = compactChatText(currentPrompt || "", 4000);
+  const items = normalizeChatHistory(history);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.role !== role) continue;
+    if (item.text === cleanPrompt) continue;
+    return item.text;
+  }
+  return "";
+}
+
+function extractHookFromAssistantHistory(text = "") {
+  const source = String(text || "");
+  const patterns = [
+    /Ready Hook\s*[\r\n]+["“]?([^"\n\r]+)["”]?/i,
+    /Ready Hook\s*[:\-]?\s*["“]?([^"\n\r]+)["”]?/i,
+    /Hook(?:\s*\(0-3s\))?:\s*([^\n\r]+)/i,
+    /Audio:\s*"([^"]+)"/i
+  ];
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    if (match?.[1]) return compactChatText(match[1], 180);
+  }
+  return "";
+}
+
+function scriptSourceFromContext(prompt, history = [], transcriptContext = []) {
+  const directDraft = extractDraftForScript(prompt);
+  if (directDraft && directDraft.length > 80) {
+    return { type: "draft", text: directDraft };
+  }
+  const previousUser = previousHistoryMessage(history, "user", prompt);
+  if (previousUser && previousUser.length > 80) {
+    return { type: "previous-user", text: extractDraftForScript(previousUser) };
+  }
+  const previousAssistant = previousHistoryMessage(history, "assistant", prompt);
+  const assistantHook = extractHookFromAssistantHistory(previousAssistant);
+  if (assistantHook) {
+    return { type: "assistant-hook", text: assistantHook, source: previousAssistant };
+  }
+  const lead = Array.isArray(transcriptContext) ? transcriptContext[0] : null;
+  if (lead?.title || lead?.openingLine) {
+    return { type: "transcript-lead", text: compactChatText(lead.title || lead.openingLine, 180) };
+  }
+  return { type: "none", text: "" };
+}
+
+function firstSentence(value, fallback = "") {
+  const text = compactChatText(value || "", 220);
+  if (!text) return fallback;
+  return text.split(/(?<=[.!?])\s+/)[0] || text;
+}
+
+function stripLeadInPhrase(value = "") {
+  return String(value || "")
+    .replace(/^(have you ever wished\s+)/i, "")
+    .replace(/^(what if\s+)/i, "")
+    .replace(/^(imagine\s+)/i, "")
+    .replace(/^(here'?s\s+)/i, "")
+    .trim();
+}
+
+function reelTopicFromLead(lead, fallback = "your business") {
+  const title = compactChatText(lead?.title || "", 220);
+  if (title && !/^untitled reel$/i.test(title)) return stripLeadInPhrase(title.replace(/\.\.\.$/, "")) || fallback;
+  const opener = compactChatText(lead?.openingLine || "", 220);
+  return stripLeadInPhrase(opener) || fallback;
+}
+
+function buildWordForWordScript({ lead, hook, pillar, topicHint, openerStyle, referenceLine }) {
+  const openingClaim = firstSentence(openerStyle, "Most founders are missing the real reason this works.");
+  const lineStyle = firstSentence(referenceLine, "");
+  const topic = stripLeadInPhrase(topicHint || reelTopicFromLead(lead, "your business")) || "your business";
+  const pillarLabel = String(pillar || "your lane").toLowerCase();
+  const beat2 = lineStyle
+    ? compactChatText(lineStyle, 160)
+    : `The interesting part is not the tool itself. The interesting part is what it lets a business owner do faster, cheaper, or with less friction.`;
+  const beat3 = /crore|lakh|million|billion|%|\d/i.test(openingClaim)
+    ? `That is exactly why this kind of reel works. The number gets attention, but the real hook is the shortcut behind the number.`
+    : `Most people stop at the surface claim. The better reel is the one that shows the hidden mechanism behind the claim.`;
+  const beat4 = `So if you are making content in ${pillarLabel}, do not explain everything. Land one sharp claim, show one proof point, and make the viewer feel smarter in under 40 seconds.`;
+  const close = `That is the format I would double down on for the next reel. Save this if you want more scripts built from your own winning patterns.`;
+  return [
+    openingClaim,
+    beat2,
+    beat3,
+    beat4,
+    close
+  ].map((line) => compactChatText(line.replace(/\s+/g, " ").trim(), 220));
+}
+
+function chatFullScriptAnswer(prompt, dashboard, transcriptContext = [], history = []) {
+  const context = buildContextSummary(dashboard);
+  const { lead } = selectTranscriptPattern(transcriptContext);
+  const source = scriptSourceFromContext(prompt, history, transcriptContext);
+  const draft = source.text;
+  const hook = lead?.hook || context.hookLeader?.label || "Data Hook";
+  const pillar = transcriptPatternPillar(lead, context);
+  const openerStyle = lead?.openingLine || "Most people are missing the real reason this is happening.";
+  const referenceLine = lead?.matchedSnippet && lead?.matchedSnippet !== openerStyle ? lead.matchedSnippet : "";
+  const workingHook = extractHookFromAssistantHistory(source.source || "") || firstSentence(draft, openerStyle);
+  const topicHint = compactChatText(draft || lead?.title || "this topic", 120);
+  const hasConcreteSource = Boolean(draft);
+  const scriptLines = buildWordForWordScript({
+    lead,
+    hook,
+    pillar,
+    topicHint,
+    openerStyle: workingHook || openerStyle,
+    referenceLine
+  });
+
+  return [
+    "Verdict",
+    hasConcreteSource
+      ? `Yes, this can work for your past pattern if you keep it as a ${hook} inside ${pillar}. The key is to reduce it to one sharp tension, not five competing points.`
+      : `I can use your transcript pattern here, but I do not have a full draft/topic in this message. So I am grounding this script in the strongest available thread context and your saved transcript pattern.`,
+    "",
+    "Ready-to-record reel script",
+    `Hook (0-3s): ${scriptLines[0]}`,
+    "",
+    `Beat 1 (3-10s): ${scriptLines[1]}`,
+    "",
+    `Beat 2 (10-22s): ${scriptLines[2]}`,
+    "",
+    `Beat 3 (22-35s): ${scriptLines[3]}`,
+    "",
+    `Close (35-45s): ${scriptLines[4]}`,
+    "",
+    "On-screen text",
+    `${compactChatText(scriptLines[0], 90)} | Hidden mechanism | One clear takeaway`,
+    "",
+    "Delivery",
+    "Direct-to-camera, fast founder tone. First frame should land the claim instantly. Keep cuts tight, use one visual proof moment, and do not add a second topic midway.",
+    "",
+    "What to copy from your winning transcripts",
+    `Open specific like: "${compactChatText(openerStyle, 140)}"`,
+    referenceLine ? `Use one punchy supporting line style like: "${compactChatText(referenceLine, 150)}"` : "Keep every beat as one clean claim followed by one proof point.",
+    "",
+    transcriptConfidenceLine(transcriptContext),
+    "",
+    "Next action",
+    hasConcreteSource
+      ? "If you want, send the exact draft again and I will tighten this into a final word-for-word recording script."
+      : "If you want a precise final script, send the exact topic/draft in one message. Right now this is pattern-grounded, not draft-grounded."
+  ].filter(Boolean).join("\n\n");
+}
+
+function analyticsConfidenceLine(dashboard, sampleSize = 0, fallbackReason = "broad dashboard evidence") {
+  const confidence = confidenceBand(sampleSize || dashboard.summary?.posts || 0);
+  return `Confidence: ${confidence.label} confidence. Reason: ${confidence.reason || fallbackReason}.`;
+}
+
+function reelPerformanceScore(reel) {
+  return Number(reel.views || 0)
+    + Number(reel.saves || 0) * 12
+    + Number(reel.comments || 0) * 8
+    + Number(reel.retention || 0) * 500
+    + Number(reel.watchTime || 0) * 40;
+}
+
+function auditPatternGroups(reels = []) {
+  const buckets = new Map();
+  reels.forEach((reel) => {
+    const hook = String(reel.hook || "Unknown").trim();
+    const pillar = String(reel.pillar || "General").trim();
+    const strategy = String(reel.strategy || "Direct").trim();
+    const key = `${hook}__${pillar}__${strategy}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        key,
+        hook,
+        pillar,
+        strategy,
+        posts: 0,
+        views: 0,
+        saves: 0,
+        comments: 0,
+        retention: 0,
+        watchTime: 0,
+        examples: []
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.posts += 1;
+    bucket.views += Number(reel.views || 0);
+    bucket.saves += Number(reel.saves || 0);
+    bucket.comments += Number(reel.comments || 0);
+    bucket.retention += Number(reel.retention || 0);
+    bucket.watchTime += Number(reel.watchTime || 0);
+    bucket.examples.push(reel);
+  });
+  return [...buckets.values()]
+    .map((bucket) => {
+      const rankedExamples = [...bucket.examples].sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left));
+      const avgViews = bucket.posts ? bucket.views / bucket.posts : 0;
+      const avgSaves = bucket.posts ? bucket.saves / bucket.posts : 0;
+      const avgComments = bucket.posts ? bucket.comments / bucket.posts : 0;
+      const avgRetention = bucket.posts ? bucket.retention / bucket.posts : 0;
+      const avgWatchTime = bucket.posts ? bucket.watchTime / bucket.posts : 0;
+      return {
+        ...bucket,
+        avgViews,
+        avgSaves,
+        avgComments,
+        avgRetention,
+        avgWatchTime,
+        label: `${bucket.hook} + ${bucket.pillar} + ${bucket.strategy}`,
+        score: avgViews + avgSaves * 12 + avgComments * 8 + avgRetention * 500 + avgWatchTime * 40,
+        topExample: rankedExamples[0] || null
+      };
+    });
+}
+
+function formatPatternAuditLine(pattern, index, mode = "winning") {
+  const title = compactChatText(pattern?.topExample?.title || "Untitled reel", 72);
+  const views = fmtCompact(Number(pattern?.avgViews || 0));
+  const retention = fmtPercent(Number(pattern?.avgRetention || 0), 1);
+  const watch = `${Number(pattern?.avgWatchTime || 0).toFixed(1)}s`;
+  const saves = fmtCompact(Number(pattern?.avgSaves || 0));
+  const prefix = `${index + 1}. ${pattern.label}`;
+  if (mode === "weak") {
+    return `${prefix}: ${pattern.posts} posts, only ${views} avg views, ${retention} retention, ${watch} avg watch time. Weak example signal: "${title}".`;
+  }
+  return `${prefix}: ${pattern.posts} posts, ${views} avg views, ${retention} retention, ${watch} avg watch time, ${saves} avg saves. Best example: "${title}".`;
+}
+
+function topCompetitorTranscriptSnapshot(dashboard) {
+  const competitorReels = Array.isArray(dashboard.competitorReels) ? dashboard.competitorReels : [];
+  const withTranscript = competitorReels.filter((reel) => hasTranscriptPayload(reel));
+  if (!withTranscript.length) return null;
+  const topReel = [...withTranscript].sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))[0];
+  const sourceHandle = String(topReel.sourceHandle || "").replace(/^@/, "").trim().toLowerCase();
+  const competitor = (dashboard.competitors || []).find((item) => String(item.canonicalHandle || item.handle || "").trim().toLowerCase() === sourceHandle)
+    || (dashboard.competitors || []).find((item) => String(item.name || "").trim().toLowerCase() === String(topReel.sourceName || "").trim().toLowerCase())
+    || null;
+  return { topReel, competitor };
+}
+
+function chatCompetitorMomentumAnswer(prompt, dashboard) {
+  const competitor = matchedCompetitorFromPrompt(prompt, dashboard);
+  if (!competitor) return "";
+  const reels = Array.isArray(competitor.reels) ? competitor.reels : [];
+  const avgViews = reels.length ? avg(reels, "views") : 0;
+  const topHook = competitor.topHook || competitorHookLabel(competitor);
+  const topFormat = competitor.bestFormat || "short video";
+  const leadReel = reels[0];
+  const confidence = confidenceBand(reels.length);
+  return [
+    `Breakdown: ${competitor.name} is moving with ${competitor.monthlyGrowthLabel || "tracked momentum"} right now.`,
+    `Evidence: the visible pattern is ${topFormat} format plus ${topHook} packaging, and the tracked set is averaging ${fmtCompact(avgViews)} views per reel.${leadReel?.title ? ` The clearest recent example is "${compactChatText(leadReel.title, 110)}".` : ""}`,
+    `Confidence: ${confidence.label} confidence. Reason: ${confidence.reason}.`,
+    "Next action: study the structure, topic packaging, and proof style here, then rebuild the same psychology in your own voice instead of copying the delivery."
+  ].join("\n\n");
+}
+
+function chatAllReelsAnalysisAnswer(dashboard) {
+  const context = buildContextSummary(dashboard);
+  const topReel = context.topReel;
+  const posts = Number(dashboard.summary?.posts || dashboard.posts?.length || 0);
+  const safeTopViews = Number.isFinite(Number(topReel?.views)) ? fmtCompact(Number(topReel.views)) : "";
+  const topViewsLabel = topReel?.viewsLabel && !/nan/i.test(String(topReel.viewsLabel)) ? topReel.viewsLabel : safeTopViews;
+  const transcriptPosts = (dashboard.posts || []).filter((reel) => hasTranscriptPayload(reel));
+  const patternGroups = auditPatternGroups(transcriptPosts.length ? transcriptPosts : (dashboard.posts || []));
+  const winningPatterns = [...patternGroups]
+    .filter((pattern) => pattern.posts >= 1)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5);
+  const weakPatterns = [...patternGroups]
+    .filter((pattern) => pattern.posts >= 1)
+    .sort((left, right) => left.avgRetention - right.avgRetention || left.avgViews - right.avgViews)
+    .slice(0, 5);
+  const stopPattern = weakPatterns[0] || null;
+  const doubleDownPattern = winningPatterns[0] || null;
+  const competitorSnapshot = topCompetitorTranscriptSnapshot(dashboard);
+  const competitorLine = competitorSnapshot?.topReel
+    ? `${competitorSnapshot.competitor?.name || competitorSnapshot.topReel.sourceName || competitorSnapshot.topReel.sourceHandle} is the clearest competitor transcript benchmark right now. Their strongest visible reel uses ${competitorSnapshot.topReel.hook} packaging in ${competitorSnapshot.topReel.pillar}, opens with "${compactChatText(normalizeTimestampedTranscript(competitorSnapshot.topReel.timestampedTranscript)[0]?.text || competitorSnapshot.topReel.scriptSummary?.[0] || competitorSnapshot.topReel.transcript, 140)}", and wins through faster clarity than most of your weaker reels.`
+    : "Competitor transcript comparison is limited right now because no imported competitor transcript set is strong enough in the current range.";
+  const creatorComparison = doubleDownPattern?.topExample
+    ? `Your strongest repeatable creator pattern is ${doubleDownPattern.label}. The best example is "${compactChatText(doubleDownPattern.topExample.title || doubleDownPattern.topExample.caption, 88)}", which suggests that direct specificity plus a clean first-frame promise is still your highest-signal packaging.`
+    : `Your strongest repeatable creator pattern is ${context.hookLeader.label} inside ${context.pillarLeader.label}.`;
+  return [
+    "Catalogue audit",
+    `Finding: across ${posts} reels, your catalogue is strongest when it stays inside ${context.hookLeader.label} style packaging and turns one idea into one clear promise.${topReel?.title ? ` The current visible winner is "${compactChatText(topReel.title, 120)}"${topViewsLabel ? ` at ${topViewsLabel} views` : ""}.` : ""}`,
+    "",
+    "Top 5 winning patterns",
+    ...winningPatterns.map((pattern, index) => formatPatternAuditLine(pattern, index, "winning")),
+    "",
+    "Top 5 weak patterns",
+    ...weakPatterns.map((pattern, index) => formatPatternAuditLine(pattern, index, "weak")),
+    "",
+    "What to stop posting",
+    stopPattern
+      ? `Reduce ${stopPattern.label} unless you can rebuild the opener. Right now this pattern is creating weak watch depth and low carry-through. The failure is not usually the topic itself, it is that the reel takes too long to declare the payoff.`
+      : "No clear stop-pattern yet because the current range is too mixed.",
+    "",
+    "What to double down on",
+    doubleDownPattern
+      ? `Do more of ${doubleDownPattern.label}. It is your cleanest repeatable winner because it combines immediate clarity with stronger average saves, retention, and watch time than the rest of the catalogue. Build the next 3-5 reels in this lane before expanding sideways.`
+      : `Double down on ${context.hookLeader.label} inside ${context.pillarLeader.label}.`,
+    "",
+    "Creator vs competitor transcript comparison",
+    creatorComparison,
+    competitorLine,
+    "Gap: your weaker reels often sound like they are still setting up the idea, while the stronger competitor examples tend to land the claim immediately and then justify it in one or two beats.",
+    "",
+    analyticsConfidenceLine(dashboard, posts),
+    "Next action: use this audit as a packaging decision system. Keep one winning lane, kill one weak lane, and ask me next for `turn the top winning pattern into 5 reel ideas` or `compare my reels vs competitor transcript line by line`."
+  ].join("\n");
+}
+
+function chatBestReelAnalysisAnswer(dashboard) {
+  const topReel = dashboard.topReels?.[0] || null;
+  if (!topReel) {
+    return [
+      "Best-reel analysis",
+      "I could not find a top reel in the current filtered range.",
+      "Next action: widen the date range or remove filters, then ask again."
+    ].join("\n\n");
+  }
+  const title = compactChatText(topReel.title || topReel.caption || "Untitled reel", 140);
+  const hook = topReel.hook || "direct hook";
+  const pillar = topReel.pillar || "your current lane";
+  const format = topReel.format || topReel.strategy || topReel.platform || "short-form video";
+  const evidenceBits = [
+    topReel.viewsLabel ? `${topReel.viewsLabel} views` : "",
+    topReel.likesLabel ? `${topReel.likesLabel} likes` : "",
+    topReel.commentsLabel && topReel.commentsLabel !== "0" ? `${topReel.commentsLabel} comments` : "",
+    topReel.savesLabel && topReel.savesLabel !== "0" ? `${topReel.savesLabel} saves` : "",
+    topReel.engagementRateLabel && topReel.engagementRateLabel !== "N/A" ? `${topReel.engagementRateLabel} engagement` : "",
+    topReel.watchTimeLabel ? `${topReel.watchTimeLabel} watch time` : ""
+  ].filter(Boolean).join(", ");
+  return [
+    "Best-reel analysis",
+    `Finding: your current best reel is "${title}", and it is winning because it packages a ${hook} inside ${pillar} with a format that is fast to parse.`,
+    `Evidence: this reel is leading the filtered set${evidenceBits ? ` at ${evidenceBits}` : ""}. The repeatable pattern is one clean promise up front, low confusion in the first frame, and a topic that can be understood immediately.`,
+    analyticsConfidenceLine(dashboard, dashboard.summary?.posts || 0),
+    `Next action: do not copy the topic word-for-word. Copy the packaging instead: keep the opener style close to ${hook}, stay inside ${pillar}, and rebuild the next reel in a ${String(format).toLowerCase()} format with one sharper proof point.`
+  ].join("\n\n");
+}
+
+function chatAllScriptsAuditAnswer(dashboard) {
+  const transcriptPosts = (dashboard.posts || []).filter((reel) => hasTranscriptPayload(reel));
+  const posts = transcriptPosts.length;
+  const patterns = auditPatternGroups(transcriptPosts);
+  const winners = [...patterns].sort((left, right) => right.score - left.score).slice(0, 5);
+  const weak = [...patterns].sort((left, right) => left.avgViews - right.avgViews || left.avgWatchTime - right.avgWatchTime).slice(0, 5);
+  const openings = transcriptPosts
+    .slice()
+    .sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))
+    .slice(0, 5)
+    .map((reel, index) => {
+      const opening = normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text || reel.scriptSummary?.[0] || reel.transcript || reel.caption || "";
+      return `${index + 1}. "${compactChatText(opening, 150)}" -> ${reel.hook} / ${reel.strategy || "strategy"} / ${reel.viewsLabel || fmtCompact(reel.views)} views`;
+    });
+  return [
+    "Script audit",
+    `I found ${posts} reels with transcript/script evidence in the current dashboard. The strongest scripts are not winning because they are longer; they win because the first line makes the topic obvious fast, then the middle gives one business insight instead of general commentary.`,
+    "",
+    "Top script patterns to copy",
+    ...winners.map((pattern, index) => formatPatternAuditLine(pattern, index, "winning")),
+    "",
+    "Weak script patterns to reduce",
+    ...weak.map((pattern, index) => formatPatternAuditLine(pattern, index, "weak")),
+    "",
+    "Best opening styles from your scripts",
+    ...(openings.length ? openings : ["No clean transcript openings found in this range."]),
+    "",
+    "What to fix",
+    "1. Start with the payoff, not the setup. If the reel needs two sentences before the viewer knows why to care, cut the first sentence.",
+    "2. Keep one idea per reel. Your weaker scripts drift from story to explanation to generic takeaway.",
+    "3. Replace broad founder advice with one concrete mechanism: cost, distribution, retention, policy, timing, or consumer behavior.",
+    "4. Reuse the structure of winning hooks, but change the visual angle and first-frame text so it does not feel like a repost.",
+    "",
+    "Next script rule",
+    "Use this structure for the next 5 reels: counter-intuitive first line -> one proof point -> hidden business mechanism -> opinionated founder takeaway -> soft save CTA.",
+    "",
+    analyticsConfidenceLine(dashboard, posts)
+  ].join("\n");
+}
+
+function chatOutshineStrategyAnswer(dashboard) {
+  const context = buildContextSummary(dashboard);
+  const transcriptPosts = (dashboard.posts || []).filter((reel) => hasTranscriptPayload(reel));
+  const patterns = auditPatternGroups(transcriptPosts.length ? transcriptPosts : dashboard.posts || []);
+  const winner = [...patterns].sort((left, right) => right.score - left.score)[0];
+  const weak = [...patterns].sort((left, right) => left.avgViews - right.avgViews || left.avgWatchTime - right.avgWatchTime)[0];
+  const competitorSnapshot = topCompetitorTranscriptSnapshot(dashboard);
+  const competitor = competitorSnapshot?.competitor || context.topCompetitor;
+  const competitorOpening = competitorSnapshot?.topReel
+    ? normalizeTimestampedTranscript(competitorSnapshot.topReel.timestampedTranscript)[0]?.text || competitorSnapshot.topReel.scriptSummary?.[0] || competitorSnapshot.topReel.transcript || ""
+    : "";
+  return [
+    "Outshine strategy",
+    `Direct answer: to outshine, stop trying to cover more topics. You need sharper packaging around the patterns already working: ${context.hookLeader?.label || "your top hook"} hooks, ${context.pillarLeader?.label || "your strongest pillar"}, and scripts that reveal one hidden business mechanism quickly.`,
+    "",
+    "Evidence from your content",
+    winner ? `Your best repeatable lane is ${winner.label}: ${winner.posts} posts, ${fmtCompact(winner.avgViews)} avg views, ${fmtPercent(winner.avgRetention, 1)} retention, ${Number(winner.avgWatchTime || 0).toFixed(1)}s avg watch time.` : "No clear winner pattern found yet.",
+    weak ? `Your weakest lane is ${weak.label}: ${weak.posts} posts, ${fmtCompact(weak.avgViews)} avg views, ${fmtPercent(weak.avgRetention, 1)} retention. This is the lane to reduce or rebuild.` : "",
+    "",
+    "Competitor reference",
+    competitor ? `${competitor.name || competitor.canonicalHandle} is the benchmark to watch right now. Their visible edge is ${competitor.topHook || "clear hook packaging"} with ${competitor.bestFormat || "short video"} format.` : "No competitor benchmark is strong enough in the current tracker.",
+    competitorOpening ? `Competitor transcript opener to learn from: "${compactChatText(competitorOpening, 150)}". Study the speed and clarity, not the wording.` : "",
+    "",
+    "What to do next",
+    "1. Make every first line a claim, not context.",
+    "2. Pick one recurring lane for the next 7 days and publish variations instead of changing pillar every reel.",
+    "3. Add one hard proof point by second 8: data, money, geography, time, consumer behavior, or distribution.",
+    "4. End with an opinionated business takeaway. Avoid generic CTAs like 'drop your thoughts'.",
+    "5. Compare every new script against your strongest transcript opener before posting.",
+    "",
+    "Next content direction",
+    winner
+      ? `Double down on ${winner.label}. Build 3 reels from this lane: one data shock, one founder story, and one competitor teardown.`
+      : `Double down on ${context.hookLeader?.label || "your strongest hook"} inside ${context.pillarLeader?.label || "your strongest pillar"}.`,
+    "",
+    analyticsConfidenceLine(dashboard, dashboard.summary?.posts || transcriptPosts.length || 0)
+  ].join("\n");
 }
 
 function fallbackChat(prompt, dashboard, selectedStory = null) {
@@ -2615,14 +3728,24 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
 
   if (query.includes("underperform") || query.includes("last reel")) {
     return {
-      answer: `Your weakest pattern right now is lower-retention hooks relative to ${context.hookLeader.label}. The current leader is averaging ${fmtPercent(context.hookLeader.avgRetention)} retention, so underperformers should usually be re-cut around that opening style and published near your highest-scoring time slots.`,
+      answer: [
+        `Diagnosis: your weaker reels are underperforming because their opening pattern is not matching ${context.hookLeader.label}, which is the current retention leader.`,
+        `Evidence: ${context.hookLeader.label} is averaging ${fmtPercent(context.hookLeader.avgRetention)} retention in the current set, while your recent weak reels are falling short of that opening strength.`,
+        analyticsConfidenceLine(dashboard, dashboard.summary?.posts || 0),
+        "Next action: re-cut the first 3 seconds of the last weak reel, swap in a sharper opener, and republish near your highest-scoring posting slot."
+      ].join("\n\n"),
       citations: [dashboard.insights[1]?.citation, dashboard.insights[3]?.citation].filter(Boolean)
     };
   }
 
   if ((query.includes("why is my") || query.includes("working right now") || query.includes("why is")) && (query.includes("pillar") || query.includes("content") || query.includes("founder story") || query.includes("growth"))) {
     return {
-      answer: `${context.pillarLeader.label} is working because it is currently your highest-output pillar, and it is being lifted by ${context.hookLeader.label} style openings. In your saved analytics, that combination is doing the best job of holding attention and concentrating views around the strongest posting slots.`,
+      answer: [
+        `Finding: ${context.pillarLeader.label} is working because it is your highest-output pillar and it is being amplified by ${context.hookLeader.label} openings.`,
+        `Evidence: inside your saved analytics, that pillar + hook combination is doing the best job of holding attention and concentrating views around the strongest posting windows.`,
+        analyticsConfidenceLine(dashboard, dashboard.summary?.posts || 0),
+        `Next action: keep the next 3-5 reels inside ${context.pillarLeader.label}, but vary the example or proof point instead of changing the pillar.`
+      ].join("\n\n"),
       citations: [dashboard.insights[0]?.citation, dashboard.insights[2]?.citation, dashboard.insights[3]?.citation].filter(Boolean)
     };
   }
@@ -2637,9 +3760,71 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
     };
   }
 
+  if (isCompetitorMomentumRequest(cleanPrompt, dashboard)) {
+    return {
+      answer: chatCompetitorMomentumAnswer(cleanPrompt, dashboard),
+      citations: [{ view: "competitors", section: "competitorsTable", label: "Competitor tracker" }]
+    };
+  }
+
+  if (isAllReelsAnalysisRequest(cleanPrompt)) {
+    return {
+      answer: chatAllReelsAnalysisAnswer(dashboard),
+      citations: [
+        { view: "performance", section: "kpiGrid", label: "Dashboard KPIs" },
+        dashboard.insights[0]?.citation
+      ].filter(Boolean)
+    };
+  }
+
+  if (isAllScriptsAnalysisRequest(cleanPrompt)) {
+    return {
+      answer: chatAllScriptsAuditAnswer(dashboard),
+      citations: [
+        { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+        { view: "performance", section: "hookChart", label: "Hook performance" }
+      ]
+    };
+  }
+
+  if (isOutshineStrategyRequest(cleanPrompt)) {
+    return {
+      answer: chatOutshineStrategyAnswer(dashboard),
+      citations: [
+        { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+        { view: "competitors", section: "competitorsTable", label: "Competitor references" }
+      ]
+    };
+  }
+
+  if (isBestReelAnalysisRequest(cleanPrompt)) {
+    return {
+      answer: chatBestReelAnalysisAnswer(dashboard),
+      citations: [
+        { view: "performance", section: "topPerformers", label: "Top performers" },
+        { view: "performance", section: "allPostsTable", label: "Reel-level breakdown" }
+      ]
+    };
+  }
+
+  if (isFullScriptRequest(cleanPrompt)) {
+    return {
+      answer: chatFullScriptAnswer(cleanPrompt, dashboard, context.transcriptContext || []),
+      citations: [
+        { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+        dashboard.insights[0]?.citation
+      ].filter(Boolean)
+    };
+  }
+
   if (query.includes("competitor")) {
     return {
-      answer: `${context.topCompetitor.name} is moving fastest at ${context.topCompetitor.monthlyGrowthLabel}. Study the structure of ${context.topCompetitor.bestFormat}, but keep your own trust-led positioning rather than copying their voice directly.`,
+      answer: [
+        `Finding: ${context.topCompetitor.name} is the fastest-moving competitor right now at ${context.topCompetitor.monthlyGrowthLabel}.`,
+        `Evidence: the visible format lifting them is ${context.topCompetitor.bestFormat}, which makes them the strongest current watchlist signal in your competitor set.`,
+        "Confidence: Medium confidence. Reason: this comes from tracked competitor momentum, not full causal attribution.",
+        "Next action: study their structure and topic packaging, but translate it into your own trust-led voice instead of copying delivery."
+      ].join("\n\n"),
       citations: [{ view: "competitors", section: "competitorsTable", label: "Competitor tracker" }]
     };
   }
@@ -2654,14 +3839,24 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
 
   if (query.includes("save")) {
     return {
-      answer: `${context.hookLeader.label} hooks and ${context.pillarLeader.label} posts are doing the heaviest lifting on saves right now. Those are the clearest formats to double down on when you want conversion-quality attention instead of vanity reach.`,
+      answer: [
+        `Finding: ${context.hookLeader.label} hooks and ${context.pillarLeader.label} posts are driving the strongest save behavior right now.`,
+        "Evidence: those formats are converting attention into save intent better than the rest of the current mix.",
+        analyticsConfidenceLine(dashboard, dashboard.summary?.posts || 0),
+        `Next action: make your next save-optimized reel inside ${context.pillarLeader.label} and package the first line with a ${context.hookLeader.label} opener.`
+      ].join("\n\n"),
       citations: [{ view: "performance", section: "hookChart", label: "Hook comparison" }]
     };
   }
 
   if (transcriptLead && isTranscriptStrategyRequest(cleanPrompt)) {
     return {
-      answer: `Closest transcript-backed pattern right now is "${transcriptLead.title}". It opens with "${transcriptLead.openingLine}", sits in ${transcriptLead.pillar}, and the strongest matched phrasing is "${transcriptLead.matchedSnippet}". If you want, ask for next-post planning, hook rewrite, or reel script and I will use this transcript pattern directly.`,
+      answer: [
+        `Closest transcript-backed pattern right now is "${transcriptLead.title}".`,
+        `Evidence: it opens with "${transcriptLead.openingLine}", sits in ${transcriptLead.pillar}, and the strongest matched phrasing is "${transcriptLead.matchedSnippet}".`,
+        transcriptConfidenceLine(context.transcriptContext || []),
+        "Next action: ask for next-post planning, hook rewrite, or reel script and I will use this transcript pattern directly."
+      ].join("\n\n"),
       citations: [
         { view: "performance", section: "allPostsTable", label: "Transcript examples" },
         dashboard.insights[0]?.citation
@@ -2670,7 +3865,12 @@ function fallbackChat(prompt, dashboard, selectedStory = null) {
   }
 
   return {
-    answer: `I could not map "${cleanPrompt}" to a precise task, so here is the closest analytics-backed read: ${context.hookLeader.label} is your strongest hook pattern, ${context.pillarLeader.label} is your leading pillar, and ${context.topCompetitor.name} is the fastest-moving competitor. Ask for monthly summary, weekly plan, transcript script, competitor breakdown, news angle, or re-cut audit for a sharper answer.`,
+    answer: [
+      `I could not map "${cleanPrompt}" to one precise task, so here is the closest analytics-backed read.`,
+      `Evidence: ${context.hookLeader.label} is your strongest hook pattern, ${context.pillarLeader.label} is your leading pillar, and ${context.topCompetitor.name} is the fastest-moving competitor in the current tracker.`,
+      analyticsConfidenceLine(dashboard, dashboard.summary?.posts || 0),
+      "Next action: ask for monthly summary, weekly plan, transcript script, competitor breakdown, news angle, or re-cut audit for a sharper answer."
+    ].join("\n\n"),
     citations: [dashboard.insights[0]?.citation, dashboard.insights[2]?.citation].filter(Boolean)
   };
 }
@@ -2693,7 +3893,7 @@ async function openAiChat(prompt, dashboard, selectedStory = null) {
           content: [
             {
               type: "input_text",
-              text: "You are a creator analytics assistant. Use only the provided dashboard context, including transcriptContext when present. Treat transcriptContext as the highest-priority grounding for proven wording, openers, pacing, and structure. Prefer the openingLine and matchedSnippet fields over generic summaries. Be concise and actionable. Do not invent metrics. If a selected story is provided and the user asks for a reel, answer only for that exact story. Return one compact reel brief with these exact blocks: Hook, Angle, Script, Delivery. Do not give multiple options. Do not repeat the same context in different wording."
+              text: "You are CreatorOS, a creator strategist that improves decisions using only creator-specific evidence. Use only the provided dashboard context. Transcript context has highest priority for proven wording, pacing, openers, structure, and reusable phrasing. Never invent metrics, history, competitors, or certainty. If evidence is weak, say so. Prefer explainable recommendations over generic advice. Every recommendation should make clear why this, why now, what to copy, what to avoid, and what to do next. If a selected story is provided and the user asks for a reel, answer only for that exact story. Default to long-form answers with clear sections, not compressed blurbs. Use headings when helpful. When useful, include a confidence line based on available evidence."
             }
           ]
         },
@@ -2738,21 +3938,49 @@ async function geminiTextInteraction({ prompt, responseFormat = null }) {
     };
   }
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": geminiApiKey
-    },
-    body: JSON.stringify(payload)
-  });
+  let lastError = null;
+  for (const modelName of geminiModelCandidates) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": geminiApiKey
+      },
+      body: JSON.stringify(payload)
+    });
 
-  if (!response.ok) {
+    if (response.ok) {
+      const result = await response.json();
+      if (result) {
+        result._model = modelName;
+        return result;
+      }
+    }
+
     const details = await response.text();
-    throw new Error(`Gemini request failed with ${response.status}${details ? `: ${details}` : ""}`);
+    lastError = new Error(`Gemini request failed with ${response.status}${details ? `: ${details}` : ""}`);
+    if (![429, 500, 503].includes(response.status)) {
+      throw lastError;
+    }
   }
 
-  return response.json();
+  throw lastError || new Error("Gemini request failed.");
+}
+
+function isGeminiRequiredChatRequest(prompt) {
+  const query = String(prompt || "").trim().toLowerCase();
+  if (!query) return false;
+  if (query.length < 6) return false;
+  return /\b(analy[sz]e|audit|breakdown|strategy|outshine|ideas?|script|rewrite|next|post|reel|hook|caption|competitor|transcript|content|improve|what should|what i have)\b/.test(query);
+}
+
+function geminiUnavailableAnswer(error = null) {
+  const detail = error?.message ? ` (${compactChatText(error.message, 140)})` : "";
+  return [
+    "Gemini could not complete this answer right now.",
+    `I am not returning a local fallback because this question needs the transcript, hook, strategy, and competitor context to be analyzed properly${detail}.`,
+    "Retry the question once Gemini is responsive, or reduce the request scope if the prompt is very large."
+  ].join("\n\n");
 }
 
 function interactionOutputText(result) {
@@ -2779,12 +4007,13 @@ async function geminiChat(prompt, dashboard, selectedStory = null) {
       "Use transcriptContext when present as the highest-priority examples of the creator's proven wording, openers, pacing, and structure.",
       "Prefer transcriptContext openingLine and matchedSnippet fields over generic summaries.",
       "If selected story context is provided, prioritize that exact story instead of a generic top-news answer.",
-      "If the user asks to turn a selected news story into a reel, return one compact reel brief only.",
-      "Use exactly these blocks: Hook, Angle, Script, Delivery.",
-      "Do not provide multiple hook options.",
-      "Do not repeat the headline, angle, and script in slightly different wording.",
-      "Keep the answer under 170 words.",
-      "Be concise, practical, and grounded in the store data.",
+      "If the user asks to turn a selected news story into a reel, give one detailed reel brief only.",
+      "Default to long-form answers.",
+      "Use clear sections such as Finding, Evidence, What This Means, What To Copy, What To Avoid, and Next Action whenever they fit.",
+      "Do not provide multiple disconnected options unless the user explicitly asks for options.",
+      "Do not repeat the same point in slightly different wording.",
+      "Aim for roughly 350-700 words when the question is analytical, and 220-450 words for compact tactical asks.",
+      "Be practical, detailed, and grounded in the store data.",
       "Do not invent metrics or claims.",
       "",
       `Context: ${JSON.stringify(context)}`,
@@ -2815,18 +4044,26 @@ async function geminiTranscriptStrategyChat(prompt, dashboard) {
     prompt: [
       "You are a short-form creator strategy analyst.",
       "The user wants ideas, analysis, hooks, rewrites, or scripts based on saved reel transcripts.",
+      "You are CreatorOS, not a generic assistant. Improve the creator's next decision, do not just describe patterns.",
       "Use transcriptContext as the primary source. Do not give generic social media advice.",
+      "When competitor transcript examples are present in transcriptContext, you may analyze them too, but stay explicit about whether a point comes from creator or competitor reels.",
       "Extract the proven opener pattern, pacing, language, and content angle from the provided transcript snippets.",
       "Do not invent metrics. If metrics are missing, ignore them.",
+      "If evidence is weak or sample size is small, say so plainly.",
       "Answer in Hinglish-friendly concise English.",
       "Format exactly with these blocks:",
       "1. Transcript Pattern",
       "2. What To Copy",
-      "3. New Ideas",
-      "4. Ready Hook",
-      "5. Execution",
+      "3. What To Avoid",
+      "4. Reel-Level Observations",
+      "5. New Ideas",
+      "6. Ready Hook",
+      "7. Execution",
+      "8. Confidence",
+      "9. Next Action",
+      "For Reel-Level Observations, mention concrete transcript-backed patterns or failure points from the matched reels.",
       "For New Ideas, give 5 specific ideas. For Execution, include scene-by-scene beats for the strongest idea.",
-      "Keep it detailed but tight, around 350-500 words.",
+      "Keep it detailed and useful, around 700-1100 words.",
       "",
       `Dashboard context: ${JSON.stringify({
         creator: context.creator,
@@ -2846,6 +4083,360 @@ async function geminiTranscriptStrategyChat(prompt, dashboard) {
       { view: "performance", section: "allPostsTable", label: "Transcript examples" },
       dashboard.insights[0]?.citation
     ].filter(Boolean)
+  };
+}
+
+async function geminiFullScriptChat(prompt, dashboard, history = []) {
+  if (!geminiApiKey) return null;
+  const context = buildContextSummary(dashboard);
+  const transcriptContext = Array.isArray(context.transcriptContext) ? context.transcriptContext.slice(0, 3) : [];
+  if (!transcriptContext.length) return null;
+  const { lead } = selectTranscriptPattern(transcriptContext);
+  const source = scriptSourceFromContext(prompt, history, transcriptContext);
+  const previousUser = previousHistoryMessage(history, "user", prompt);
+  const previousAssistant = previousHistoryMessage(history, "assistant", prompt);
+  const result = await geminiTextInteraction({
+    prompt: [
+      "You are CreatorOS, a reel scriptwriter for a creator intelligence product.",
+      "The user wants a next reel script that is ready to record right now.",
+      "Use transcriptContext as the highest-priority evidence for opener style, pacing, proof style, and language.",
+      "If thread history contains a previous plan, hook, or angle, use it as supporting context.",
+      "You must anchor the script to the provided Primary Script Seed. Do not invent a completely new topic, business model, or category unless the seed explicitly contains it.",
+      "If the prompt is generic, use the strongest transcript lead and seed as the topic source. Do not wander into unrelated examples.",
+      "Write actual spoken lines. Do not write placeholders like 'add a proof point here' or 'explain the mechanism'.",
+      "Keep the script in one lane. Do not switch topic midway.",
+      "If evidence is weak, still write the strongest script you can, but say confidence is low.",
+      "Confidence must be Low when the primary transcript seed has 0 views, missing metrics, or fewer than 10 strong transcript matches. Do not claim High confidence from style match alone.",
+      "Use Hinglish-friendly concise English.",
+      "Format exactly with these blocks:",
+      "1. Script Angle",
+      "2. Final Script",
+      "3. On-screen Text",
+      "4. Delivery Notes",
+      "5. Why This Should Work",
+      "6. Confidence",
+      "Final Script must be a word-for-word 35-50 second reel script.",
+      "Do not output multiple script options.",
+      "",
+      `Context: ${JSON.stringify({
+        creator: context.creator,
+        hookLeader: context.hookLeader,
+        pillarLeader: context.pillarLeader,
+        topReel: context.topReel,
+        transcriptContext,
+        transcriptEvidenceCount: transcriptContext.length,
+        primarySeedViews: Number(lead?.views || 0)
+      })}`,
+      `Primary script seed: ${JSON.stringify({
+        sourceType: source.type,
+        sourceText: source.text,
+        transcriptLeadTitle: lead?.title || "",
+        transcriptLeadOpeningLine: lead?.openingLine || "",
+        transcriptLeadSnippet: lead?.matchedSnippet || ""
+      })}`,
+      `Previous user context: ${JSON.stringify(previousUser || "")}`,
+      `Previous assistant context: ${JSON.stringify(previousAssistant || "")}`,
+      "",
+      `User ask: ${prompt}`
+    ].join("\n")
+  });
+
+  return {
+    answer: interactionOutputText(result) || "",
+    citations: [
+      { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+      dashboard.insights[0]?.citation
+    ].filter(Boolean)
+  };
+}
+
+async function geminiNextPostChat(prompt, dashboard, history = []) {
+  if (!geminiApiKey) return null;
+  const context = buildContextSummary(dashboard);
+  const transcriptContext = Array.isArray(context.transcriptContext) ? context.transcriptContext.slice(0, 3) : [];
+  if (!transcriptContext.length) return null;
+  const { lead } = selectTranscriptPattern(transcriptContext);
+  const previousUser = previousHistoryMessage(history, "user", prompt);
+  const previousAssistant = previousHistoryMessage(history, "assistant", prompt);
+  const result = await geminiTextInteraction({
+    prompt: [
+      "You are CreatorOS, a next-post generator for a creator intelligence product.",
+      "The user wants you to build the next post from saved transcripts. They do not want a planner or meta instructions.",
+      "Use transcriptContext as the primary source for opener style, pacing, topic shape, proof style, and delivery.",
+      "Generate one concrete next post package that the creator can publish or record.",
+      "Do not output generic structure advice. Write actual content.",
+      "Keep the post in one lane and anchor it to the Primary Transcript Seed.",
+      "Do not invent an unrelated topic. If the seed is about a founder/business story, stay in founder/business analysis.",
+      "Use Hinglish-friendly concise English.",
+      "Format exactly with these blocks:",
+      "1. Next Post Angle",
+      "2. Opening Hook",
+      "3. Final Reel Script",
+      "4. Caption",
+      "5. CTA",
+      "6. Why This Should Work",
+      "7. Confidence",
+      "Final Reel Script must be word-for-word and roughly 35-50 seconds.",
+      "Opening Hook must include 3 alternate hook lines, but Final Reel Script must use only one.",
+      "",
+      `Context: ${JSON.stringify({
+        creator: context.creator,
+        hookLeader: context.hookLeader,
+        pillarLeader: context.pillarLeader,
+        topReel: context.topReel,
+        transcriptContext,
+        transcriptEvidenceCount: transcriptContext.length,
+        primarySeedViews: Number(lead?.views || 0)
+      })}`,
+      `Primary Transcript Seed: ${JSON.stringify({
+        title: lead?.title || "",
+        openingLine: lead?.openingLine || "",
+        snippet: lead?.matchedSnippet || "",
+        hook: lead?.hook || "",
+        pillar: lead?.pillar || "",
+        views: lead?.views || 0
+      })}`,
+      `Previous user context: ${JSON.stringify(previousUser || "")}`,
+      `Previous assistant context: ${JSON.stringify(previousAssistant || "")}`,
+      "",
+      `User ask: ${prompt}`
+    ].join("\n")
+  });
+
+  return {
+    answer: interactionOutputText(result) || "",
+    citations: [
+      { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+      dashboard.insights[0]?.citation,
+      dashboard.insights[3]?.citation
+    ].filter(Boolean)
+  };
+}
+
+async function geminiUnifiedChat(prompt, dashboard, history = [], selectedStory = null) {
+  if (!geminiApiKey) return null;
+  const context = buildContextSummary(dashboard);
+  const transcriptContext = (Array.isArray(context.transcriptContext) ? context.transcriptContext.slice(0, 3) : [])
+    .map((reel) => ({
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      openingLine: compactChatText(reel.openingLine, 90),
+      matchedSnippet: compactChatText(reel.matchedSnippet, 130),
+      views: reel.views
+    }));
+  const creatorReels = (dashboard.posts || [])
+    .slice()
+    .sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))
+    .slice(0, 2)
+    .map((reel) => ({
+      id: reel.id,
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      views: reel.viewsLabel || fmtCompact(reel.views),
+      engagementRate: reel.engagementRateLabel,
+      watchTime: reel.watchTimeLabel,
+      transcriptOpening: compactChatText(normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text || reel.scriptSummary?.[0] || "", 90),
+      transcriptSnippet: compactChatText(reel.transcript || reel.caption || "", 100)
+    }));
+  const competitorReels = (dashboard.competitorReels || [])
+    .filter((reel) => hasTranscriptPayload(reel))
+    .slice()
+    .sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))
+    .slice(0, 2)
+    .map((reel) => ({
+      id: reel.id,
+      creator: reel.sourceName || reel.sourceHandle,
+      handle: reel.sourceHandle,
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      views: fmtCompact(reel.views),
+      transcriptOpening: compactChatText(normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text || reel.scriptSummary?.[0] || "", 90),
+      transcriptSnippet: compactChatText(reel.transcript || reel.caption || "", 100)
+    }));
+  const previousUser = previousHistoryMessage(history, "user", prompt);
+  const previousAssistant = previousHistoryMessage(history, "assistant", prompt);
+  const result = await geminiTextInteraction({
+    prompt: [
+      "You are CreatorOS, the live AI strategist inside a creator intelligence product.",
+      "Use the current dashboard range only. The transcript evidence in this request already reflects the selected range and filters; do not pull in older evidence outside it.",
+      "Answer with the creator's own data first: transcripts, hook performance, strategy tags, top/weak patterns, competitor references, KPIs, and selected story context if present.",
+      "Do not give generic advice. Every recommendation must clearly connect back to the provided evidence.",
+      "If the user asks for a script, idea, next post, hook, caption, audit, competitor breakdown, or strategy, produce the actual usable output, not a planner explaining what to do.",
+      "When transcript evidence exists, use transcript wording, opener rhythm, pacing, and strategy tags as the primary creative reference.",
+      "When competitor evidence exists, compare it with the creator's pattern, but do not copy competitor wording directly.",
+      "If evidence is weak or the range is small, say confidence is low and explain what is missing.",
+      "Be consistent: the same question type should return the same structure.",
+      "Use Hinglish-friendly concise English and keep the answer detailed but scannable.",
+      "Recommended answer format:",
+      "1. Direct Answer",
+      "2. Evidence From Your Data",
+      "3. What To Copy",
+      "4. What To Avoid",
+      "5. What To Do Next",
+      "6. Confidence",
+      "7. References Used",
+      "Do not force all sections if the user asks a very small question, but always include evidence and references.",
+      "Keep analytical answers around 500-900 words. Keep simple factual answers shorter. Keep scripts ready-to-record.",
+      "",
+      `Creator evidence: ${JSON.stringify({
+        creator: context.creator,
+        kpis: context.kpis,
+        hookLeader: context.hookLeader,
+        pillarLeader: context.pillarLeader,
+        topReel: context.topReel,
+        hookStats: (dashboard.charts?.hooks || []).slice(0, 2).map((item) => ({
+          label: item.label,
+          views: item.views,
+          avgViews: item.avgViews,
+          avgRetention: item.avgRetention,
+          posts: item.posts
+        })),
+        pillarStats: (dashboard.charts?.pillars || []).slice(0, 2).map((item) => ({
+          label: item.label,
+          views: item.views,
+          posts: item.posts
+        })),
+        transcriptContext,
+        creatorReels,
+        topCompetitor: dashboard.competitors?.[0] ? {
+          name: dashboard.competitors[0].name,
+          monthlyGrowthLabel: dashboard.competitors[0].monthlyGrowthLabel,
+          engagementRateLabel: dashboard.competitors[0].engagementRateLabel,
+          bestFormat: dashboard.competitors[0].bestFormat,
+          topHook: dashboard.competitors[0].topHook
+        } : null,
+        competitorReels
+      })}`,
+      `Current dashboard range: ${JSON.stringify(dashboard.filters || {})}`,
+      `Transcript evidence sample count: ${String(transcriptContext.length)}`,
+      `Selected story context: ${JSON.stringify(selectedStory || null)}`,
+      `Previous user context: ${JSON.stringify(previousUser || "")}`,
+      `Previous assistant context: ${JSON.stringify(previousAssistant || "")}`,
+      "",
+      `User question: ${prompt}`
+    ].join("\n")
+  });
+
+  return {
+    answer: interactionOutputText(result) || "",
+    citations: [
+      { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+      { view: "performance", section: "hookChart", label: "Hook performance" },
+      { view: "competitors", section: "competitorsTable", label: "Competitor references" },
+      dashboard.insights[0]?.citation
+    ].filter(Boolean)
+  };
+}
+
+async function geminiContentIdeasChat(prompt, dashboard, history = []) {
+  if (!geminiApiKey) return null;
+  const context = buildContextSummary(dashboard);
+  const transcriptContext = (Array.isArray(context.transcriptContext) ? context.transcriptContext.slice(0, 3) : [])
+    .map((reel) => ({
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      openingLine: compactChatText(reel.openingLine, 90),
+      matchedSnippet: compactChatText(reel.matchedSnippet, 130),
+      views: reel.views
+    }));
+  const creatorReels = (dashboard.posts || [])
+    .slice()
+    .sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))
+    .slice(0, 2)
+    .map((reel) => ({
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      views: reel.viewsLabel || fmtCompact(reel.views),
+      transcriptOpening: compactChatText(normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text || reel.scriptSummary?.[0] || "", 80),
+      transcriptSnippet: compactChatText(reel.transcript || reel.caption || "", 80)
+    }));
+  const competitorReels = (dashboard.competitorReels || [])
+    .filter((reel) => hasTranscriptPayload(reel))
+    .slice()
+    .sort((left, right) => reelPerformanceScore(right) - reelPerformanceScore(left))
+    .slice(0, 1)
+    .map((reel) => ({
+      creator: reel.sourceName || reel.sourceHandle,
+      title: reel.title,
+      hook: reel.hook,
+      pillar: reel.pillar,
+      strategy: reel.strategy,
+      views: fmtCompact(reel.views),
+      transcriptOpening: compactChatText(normalizeTimestampedTranscript(reel.timestampedTranscript)[0]?.text || reel.scriptSummary?.[0] || "", 80),
+      transcriptSnippet: compactChatText(reel.transcript || reel.caption || "", 80)
+    }));
+  const result = await geminiTextInteraction({
+    prompt: [
+      "You are CreatorOS, generating content ideas from a creator's own analytics.",
+      "Use the current dashboard range only. The transcript evidence already reflects the selected range and filters; do not pull in older evidence outside it.",
+      "The user wants content ideas based on current hooks, pillars, strategy tags, saved transcripts, and competitor references.",
+      "Return ideas, not a long lecture before the ideas.",
+      "Every idea must be grounded in at least one provided creator or competitor reference from the current range.",
+      "Do not invent revenue, views, percentages, names, or claims unless those numbers are present in the provided evidence.",
+      "If an idea needs a number but evidence does not provide one, phrase it without a fake number.",
+      "Prioritize the creator's winning transcript patterns first, then hook/pillar performance, then competitor patterns second.",
+      "Keep the ideas aligned to the same creator niche and language as the strongest transcript examples.",
+      "Use Hinglish-friendly concise English.",
+      "Format exactly:",
+      "1. Quick Read",
+      "2. 20 Ideas",
+      "3. Top 3 To Film First",
+      "4. Confidence",
+      "In 20 Ideas, each item must use this compact format: Idea title | Hook type | Pillar | Why it fits | Reference used.",
+      "For Quick Read, state the current winning pattern in one paragraph. For Top 3 To Film First, give one sentence per pick with the strongest reference used.",
+      "Do not include scene-by-scene execution unless the user asks for script/execution.",
+      "",
+      `Evidence: ${JSON.stringify({
+        hookLeader: context.hookLeader,
+        pillarLeader: context.pillarLeader,
+        hookStats: (dashboard.charts?.hooks || []).slice(0, 2).map((item) => ({
+          label: item.label,
+          views: item.views,
+          avgViews: item.avgViews,
+          avgRetention: item.avgRetention,
+          posts: item.posts
+        })),
+        pillarStats: (dashboard.charts?.pillars || []).slice(0, 2).map((item) => ({
+          label: item.label,
+          views: item.views,
+          posts: item.posts
+        })),
+        transcriptContext,
+        creatorReels,
+        topCompetitor: dashboard.competitors?.[0] ? {
+          name: dashboard.competitors[0].name,
+          monthlyGrowthLabel: dashboard.competitors[0].monthlyGrowthLabel,
+          engagementRateLabel: dashboard.competitors[0].engagementRateLabel,
+          bestFormat: dashboard.competitors[0].bestFormat,
+          topHook: dashboard.competitors[0].topHook
+        } : null,
+        competitorReels
+      })}`,
+      `Current dashboard range: ${JSON.stringify(dashboard.filters || {})}`,
+      `Transcript evidence sample count: ${String(transcriptContext.length)}`,
+      `Previous user context: ${JSON.stringify(previousHistoryMessage(history, "user", prompt) || "")}`,
+      "",
+      `User ask: ${prompt}`
+    ].join("\n")
+  });
+
+  return {
+    answer: interactionOutputText(result) || "",
+    citations: [
+      { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+      { view: "performance", section: "hookChart", label: "Hook performance" },
+      { view: "competitors", section: "competitorsTable", label: "Competitor references" }
+    ]
   };
 }
 
@@ -3541,6 +5132,31 @@ function sanitizeStorePatch(patch, current) {
 }
 
 function mapApifyItemToReel(item) {
+  const thumbnailCandidates = [
+    "thumbnailUrl",
+    "thumbnail_url",
+    "displayUrl",
+    "display_url",
+    "coverUrl",
+    "cover_url",
+    "imageUrl",
+    "image_url",
+    "videoThumbnailUrl",
+    "video_thumbnail_url",
+    "thumbnailSrc",
+    "thumbnail_src",
+    "display_resources.0.src",
+    "display_resources.1.src",
+    "display_resources.2.src",
+    "image_versions2.candidates.0.url",
+    "image_versions2.candidates.1.url",
+    "thumbnail_resources.0.src",
+    "thumbnail_resources.1.src",
+    "thumbnail_resources.2.src",
+    "clipsMetadata.thumbnailUrl",
+    "clips_metadata.thumbnail_url",
+    "clipsMetadata.thumbnail_url"
+  ];
   return normalizeReel({
     id: pickValue(item, ["id", "postId", "shortCode", "url", "inputUrl"], `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: deriveReelTitle(item),
@@ -3576,7 +5192,7 @@ function mapApifyItemToReel(item) {
       "clipsMetadata.originalVideoUrl",
       "clips_metadata.original_video_url"
     ], ""),
-    thumbnailUrl: pickValue(item, ["thumbnailUrl", "displayUrl", "coverUrl", "imageUrl"], ""),
+    thumbnailUrl: pickValue(item, thumbnailCandidates, ""),
     caption: pickValue(item, ["caption", "text", "description", "postText"], ""),
     language: pickValue(item, ["language", "lang"], ""),
     sourceHandle: pickValue(item, ["ownerUsername", "username", "owner.username"], ""),
@@ -3643,7 +5259,16 @@ function mapBrightDataItemToReel(item) {
     followersGained: pickValue(item, ["followers_gained", "follower_gain"], 0),
     url: pickValue(item, ["url", "post_url", "permalink"], ""),
     mediaUrl: pickValue(item, ["video_url", "media_url", "download_url"], ""),
-    thumbnailUrl: pickValue(item, ["thumbnail_url", "display_url", "image_url"], ""),
+    thumbnailUrl: pickValue(item, [
+      "thumbnail_url",
+      "display_url",
+      "image_url",
+      "videoThumbnailUrl",
+      "video_thumbnail_url",
+      "display_resources.0.src",
+      "display_resources.1.src",
+      "thumbnail_resources.0.src"
+    ], ""),
     caption: pickValue(item, ["caption", "description", "text"], ""),
     language: pickValue(item, ["language", "lang"], ""),
     sourceHandle: ownerHandle,
@@ -3732,8 +5357,8 @@ async function runApifyImport(store, override = {}) {
     ? restrictImportedReelsToCreator(mapped.reels, store, config)
     : null;
   const finalReels = restricted?.reels || mapped.reels;
-  const nextReels = mapped.reels ? mergeReelsById(store.reels || [], mapped.reels) : null;
-  const nextMergedReels = finalReels ? mergeReelsById(store.reels || [], finalReels) : null;
+  const nextReels = mapped.reels ? mergeReelsByIdentity(store.reels || [], mapped.reels) : null;
+  const nextMergedReels = finalReels ? mergeReelsByIdentity(store.reels || [], finalReels) : null;
   const importedReels = finalReels?.length || 0;
   const addedReels = nextMergedReels ? Math.max(0, nextMergedReels.length - (store.reels || []).length) : 0;
 
@@ -3748,6 +5373,7 @@ async function runApifyImport(store, override = {}) {
     }
   }, store);
   await writeStore(next);
+  await prewarmThumbnailCache(finalReels || mapped.reels || [], 4);
   return {
     store: next,
     importedCounts: {
@@ -3777,7 +5403,7 @@ async function runBrightDataImport(store, override = {}) {
   const items = await fetchBrightDataItems(config);
   const reels = flattenBrightDataItems(items).map(mapBrightDataItemToReel);
   const next = sanitizeStorePatch({
-    reels: mergeReelsById(store.reels || [], reels),
+    reels: mergeReelsByIdentity(store.reels || [], reels),
     integrations: {
       brightData: {
         ...config,
@@ -3940,35 +5566,179 @@ function mergeReelsById(existing, incoming) {
       byId.set(String(reel.id), incomingReel);
       return;
     }
-
-    const keepExistingAnalysis = hasTranscriptPayload(current);
-    const incomingHasAnalysis = hasTranscriptPayload(incomingReel);
-
-    byId.set(
-      String(reel.id),
-      normalizeReel({
-        ...current,
-        ...incomingReel,
-        transcript: incomingHasAnalysis ? incomingReel.transcript : current.transcript,
-        timestampedTranscript: incomingHasAnalysis && incomingReel.timestampedTranscript.length
-          ? incomingReel.timestampedTranscript
-          : current.timestampedTranscript,
-        transcriptSource: incomingHasAnalysis ? incomingReel.transcriptSource : current.transcriptSource,
-        scriptSummary: incomingHasAnalysis && incomingReel.scriptSummary.length ? incomingReel.scriptSummary : current.scriptSummary,
-        sceneBreakdown: incomingHasAnalysis && incomingReel.sceneBreakdown.length ? incomingReel.sceneBreakdown : current.sceneBreakdown,
-        language: incomingReel.language || current.language,
-        audioType: incomingReel.audioType || current.audioType,
-        tone: incomingReel.tone || current.tone,
-        productionType: incomingReel.productionType || current.productionType,
-        cta: incomingReel.cta || current.cta,
-        analysisStatus: incomingHasAnalysis ? incomingReel.analysisStatus : keepExistingAnalysis ? current.analysisStatus : incomingReel.analysisStatus,
-        analysisError: incomingHasAnalysis ? incomingReel.analysisError : current.analysisError,
-        analysisUpdatedAt: incomingHasAnalysis ? incomingReel.analysisUpdatedAt : current.analysisUpdatedAt,
-        analysisProvider: incomingHasAnalysis ? incomingReel.analysisProvider : current.analysisProvider
-      })
-    );
+    byId.set(String(reel.id), mergeReelRecords(current, incomingReel));
   });
   return [...byId.values()];
+}
+
+function mergeReelsByIdentity(existing, incoming) {
+  const merged = (existing || []).map(normalizeReel);
+  const keyToIndex = new Map();
+
+  merged.forEach((reel, index) => {
+    reelIdentityKeys(reel).forEach((key) => {
+      if (!keyToIndex.has(key)) keyToIndex.set(key, index);
+    });
+  });
+
+  (incoming || []).forEach((reel) => {
+    const incomingReel = normalizeReel(reel);
+    const matchKey = reelIdentityKeys(incomingReel).find((key) => keyToIndex.has(key));
+    if (matchKey === undefined) {
+      const nextIndex = merged.push(incomingReel) - 1;
+      reelIdentityKeys(incomingReel).forEach((key) => {
+        if (!keyToIndex.has(key)) keyToIndex.set(key, nextIndex);
+      });
+      return;
+    }
+
+    const index = keyToIndex.get(matchKey);
+    merged[index] = mergeReelRecords(merged[index], incomingReel);
+    reelIdentityKeys(merged[index]).forEach((key) => {
+      keyToIndex.set(key, index);
+    });
+  });
+
+  return merged;
+}
+
+function daysSinceIso(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return Number.POSITIVE_INFINITY;
+  return (Date.now() - parsed.getTime()) / (24 * 60 * 60 * 1000);
+}
+
+function metadataRefreshCandidates(store, handle, intervalDays = 7, limit = 3) {
+  const cleanHandle = String(handle || "").replace(/^@/, "").trim().toLowerCase();
+  if (!cleanHandle) return [];
+
+  return (store.reels || [])
+    .map(normalizeReel)
+    .filter((reel) => String(reel.sourceHandle || "").trim().toLowerCase() === cleanHandle)
+    .filter((reel) => Boolean(String(reel.url || "").trim()))
+    .filter((reel) => hasTranscriptPayload(reel))
+    .filter((reel) => daysSinceIso(reel.postedAt) >= intervalDays)
+    .filter((reel) => daysSinceIso(reel.lastMetadataRefreshAt || reel.analysisUpdatedAt || reel.postedAt) >= intervalDays)
+    .sort((left, right) => {
+      const leftRefresh = daysSinceIso(left.lastMetadataRefreshAt || left.analysisUpdatedAt || left.postedAt);
+      const rightRefresh = daysSinceIso(right.lastMetadataRefreshAt || right.analysisUpdatedAt || right.postedAt);
+      return rightRefresh - leftRefresh;
+    })
+    .slice(0, Math.max(1, Number(limit || 3)));
+}
+
+async function stampReelMetadataRefresh(reelIds = [], status = "") {
+  if (!reelIds.length) return null;
+  const current = await readStore();
+  const refreshedAt = new Date().toISOString();
+  const idSet = new Set(reelIds.map((id) => String(id)));
+  const next = sanitizeStorePatch({
+    reels: (current.reels || []).map((reel) => {
+      const normalized = normalizeReel(reel);
+      if (!idSet.has(normalized.id)) return normalized;
+      return normalizeReel({
+        ...normalized,
+        lastMetadataRefreshAt: refreshedAt
+      });
+    }),
+    integrations: {
+      apify: {
+        ...apifyConfig(current),
+        lastMetadataRefreshAt: refreshedAt,
+        lastMetadataRefreshStatus: status || `Refreshed metadata for ${reelIds.length} reels`
+      }
+    }
+  }, current);
+  await writeStore(next);
+  return next;
+}
+
+async function runApifyMetadataRefreshCycle(store, config, username) {
+  if (!config.metadataRefreshEnabled) return null;
+  const intervalDays = Math.max(1, Number(config.metadataRefreshIntervalDays || 7));
+  const batchSize = Math.max(1, Number(config.metadataRefreshBatchSize || 3));
+  const candidates = metadataRefreshCandidates(store, username, intervalDays, batchSize);
+  if (!candidates.length) return null;
+
+  const result = await runApifyImport(store, {
+    mode: config.mode,
+    actorId: config.actorId,
+    taskId: config.taskId,
+    strategy: "reels",
+    input: {
+      ...(config.input || {}),
+      username: [config.autoImportUsername || config.input?.username || "abvaidya"].flat().filter(Boolean),
+      directUrls: candidates.map((reel) => reel.url).filter(Boolean),
+      resultsLimit: candidates.length,
+      includeTranscript: false,
+      includeDownloadedVideo: false,
+      skipPinnedPosts: true
+    }
+  });
+
+  await stampReelMetadataRefresh(
+    candidates.map((reel) => reel.id),
+    `Refreshed metadata for ${candidates.length} analyzed reels @${username}`
+  );
+
+  return {
+    ...result,
+    refreshed: candidates.length
+  };
+}
+
+function thumbnailBackfillCandidates(store, limit = 12, handle = "") {
+  const normalizedHandle = String(handle || inferPrimaryCreatorHandle(store) || store.creator?.handle || "abvaidya").replace(/^@/, "").trim().toLowerCase();
+  return (store.reels || [])
+    .map(normalizeReel)
+    .filter((reel) => {
+      if (!normalizedHandle) return true;
+      return String(reel.sourceHandle || "").trim().toLowerCase() === normalizedHandle;
+    })
+    .filter((reel) => hasTranscriptPayload(reel))
+    .filter((reel) => Boolean(String(reel.url || "").trim()))
+    .sort((left, right) => Number(right.views || 0) - Number(left.views || 0))
+    .slice(0, Math.max(1, Math.min(25, Number(limit || 12))));
+}
+
+async function runApifyThumbnailBackfill(store, options = {}) {
+  const config = apifyConfig(store);
+  if (!config.token || !config.actorId) {
+    throw new Error("Apify auto import is not configured.");
+  }
+
+  const creatorHandle = String(store.creator?.handle || inferPrimaryCreatorHandle(store) || config.autoImportUsername || "abvaidya").replace(/^@/, "").trim().toLowerCase();
+  const candidates = thumbnailBackfillCandidates(store, options.limit || 12, creatorHandle);
+  if (!candidates.length) {
+    return { store, backfilled: 0, candidateIds: [] };
+  }
+
+  const result = await runApifyImport(store, {
+    mode: config.mode,
+    actorId: config.actorId,
+    taskId: config.taskId,
+    strategy: "reels",
+    input: {
+      ...(config.input || {}),
+      username: [creatorHandle || config.autoImportUsername || config.input?.username || "abvaidya"].flat().filter(Boolean),
+      directUrls: candidates.map((reel) => reel.url).filter(Boolean),
+      resultsLimit: candidates.length,
+      includeTranscript: false,
+      includeDownloadedVideo: false,
+      skipPinnedPosts: true
+    }
+  });
+
+  await stampReelMetadataRefresh(
+    candidates.map((reel) => reel.id),
+    `Backfilled thumbnails for ${candidates.length} analyzed reels`
+  );
+
+  return {
+    ...result,
+    backfilled: candidates.length,
+    candidateIds: candidates.map((reel) => reel.id)
+  };
 }
 
 function mapApifyProfileItem(item) {
@@ -4157,13 +5927,23 @@ async function runAutoApifyImportCycle() {
       }
     });
 
+    let metadataStatus = "";
+    try {
+      const refreshed = await runApifyMetadataRefreshCycle(await readStore(), config, username);
+      if (refreshed?.refreshed) {
+        metadataStatus = ` + refreshed ${refreshed.refreshed} analyzed reels`;
+      }
+    } catch (error) {
+      metadataStatus = ` | metadata refresh failed: ${error.message}`;
+    }
+
     const current = await readStore();
     const next = sanitizeStorePatch({
       integrations: {
         apify: {
           ...apifyConfig(current),
           lastAutoImportAt: new Date().toISOString(),
-          lastAutoImportStatus: `Imported ${result.importedCounts.reels} reels for @${username}`
+          lastAutoImportStatus: `Imported ${result.importedCounts.reels} reels for @${username}${metadataStatus}`
         }
       }
     }, current);
@@ -4258,7 +6038,12 @@ async function handleAdminImport(body, current) {
         reels: imported.map(mapApifyItemToReel)
       }
     : imported;
-  const next = sanitizeStorePatch(normalizedImport, current);
+  const next = sanitizeStorePatch({
+    ...normalizedImport,
+    reels: Array.isArray(normalizedImport.reels)
+      ? mergeReelsByIdentity(current.reels || [], normalizedImport.reels)
+      : normalizedImport.reels
+  }, current);
   await writeStore(next);
   return {
     status: 200,
@@ -4322,11 +6107,19 @@ createServer(async (request, response) => {
     if (url.pathname === "/api/reel-thumbnail" && (request.method === "GET" || request.method === "HEAD")) {
       const id = String(url.searchParams.get("id") || "");
       const requestedSource = String(url.searchParams.get("src") || "");
+      const fallbackTitle = String(url.searchParams.get("title") || "");
+      const fallbackHandle = String(url.searchParams.get("handle") || "");
       const store = await readStore();
       const reel = [...(store.reels || []), ...(store.competitorReels || [])]
         .map(normalizeReel)
         .find((item) => item.id === id);
+      const fallbackReel = reel || {
+        title: fallbackTitle,
+        caption: fallbackTitle,
+        sourceHandle: fallbackHandle
+      };
       const thumbnailUrl = String(reel?.thumbnailUrl || requestedSource || "");
+      const postUrl = String(reel?.url || reel?.postUrl || "");
       const cachePath = thumbnailCachePath(id || thumbnailUrl);
       const cached = await readFile(cachePath).catch(() => null);
       if (cached) {
@@ -4350,23 +6143,26 @@ createServer(async (request, response) => {
           response.end();
           return;
         }
-        response.end(thumbnailFallbackSvg(reel));
+        response.end(thumbnailFallbackSvg(fallbackReel));
         return;
       }
-      let imageResponse = null;
-      try {
-        imageResponse = await fetch(thumbnailUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
-            Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            Referer: "https://www.instagram.com/"
-          }
-        });
-      } catch {
-        imageResponse = null;
+      let fetched = await fetchRemoteThumbnailBuffer(thumbnailUrl);
+      let refreshedThumbnailUrl = "";
+      if (!fetched?.buffer?.length && postUrl) {
+        refreshedThumbnailUrl = await fetchInstagramPageThumbnailUrl(postUrl);
+        if (refreshedThumbnailUrl) {
+          fetched = await fetchRemoteThumbnailBuffer(refreshedThumbnailUrl);
+        }
       }
-      if (!imageResponse?.ok) {
+      if (!fetched?.buffer?.length && refreshedThumbnailUrl) {
+        response.writeHead(302, {
+          Location: refreshedThumbnailUrl,
+          "Cache-Control": "public, max-age=3600"
+        });
+        response.end();
+        return;
+      }
+      if (!fetched?.buffer?.length) {
         response.writeHead(200, {
           "Content-Type": "image/svg+xml; charset=utf-8",
           "Cache-Control": "public, max-age=900"
@@ -4375,22 +6171,20 @@ createServer(async (request, response) => {
           response.end();
           return;
         }
-        response.end(thumbnailFallbackSvg(reel));
+        response.end(thumbnailFallbackSvg(fallbackReel));
         return;
       }
-      const contentType = imageResponse.headers.get("content-type") || "image/jpeg";
-      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
       await mkdir(thumbnailCacheDir, { recursive: true }).catch(() => {});
-      await writeFile(cachePath, imageBuffer).catch(() => {});
+      await writeFile(cachePath, fetched.buffer).catch(() => {});
       response.writeHead(200, {
-        "Content-Type": contentType,
+        "Content-Type": fetched.contentType || "image/jpeg",
         "Cache-Control": "public, max-age=86400"
       });
       if (request.method === "HEAD") {
         response.end();
         return;
       }
-      response.end(imageBuffer);
+      response.end(fetched.buffer);
       return;
     }
 
@@ -4414,12 +6208,93 @@ createServer(async (request, response) => {
       }
       const body = parseJson(await collectBody(request), {});
       const prompt = String(body.prompt || "").trim();
+      const history = normalizeChatHistory(body.history);
       const selectedStory = normalizeChatStoryContext(body.storyContext);
       const store = await readStore();
       const dashboard = computeDashboard(store, body.filters || {});
       dashboard.transcriptContext = buildChatTranscriptContext(store, dashboard, prompt, selectedStory);
       const analyticsMeta = chatGroundingMeta(dashboard.transcriptContext, { analyticsOnly: true });
       const transcriptMeta = chatGroundingMeta(dashboard.transcriptContext, { limit: 6 });
+      const geminiRequired = isGeminiRequiredChatRequest(prompt);
+      if (isContentIdeasRequest(prompt)) {
+        let ideasResult = null;
+        let ideasError = null;
+        try {
+          ideasResult = await geminiContentIdeasChat(prompt, dashboard, history);
+        } catch (error) {
+          ideasError = error;
+          ideasResult = null;
+        }
+        if (ideasResult?.answer) {
+          return replyJson(response, 200, {
+            ...ideasResult,
+            ...transcriptMeta
+          });
+        }
+        if (geminiRequired) {
+          return replyJson(response, 503, {
+            answer: geminiUnavailableAnswer(ideasError),
+            ...transcriptMeta,
+            citations: [{ view: "performance", section: "allPostsTable", label: "Creator transcripts" }]
+          });
+        }
+      }
+      let unifiedResult = null;
+      let unifiedError = null;
+      try {
+        unifiedResult = await geminiUnifiedChat(prompt, dashboard, history, selectedStory);
+      } catch (error) {
+        unifiedError = error;
+        unifiedResult = null;
+      }
+      if (unifiedResult?.answer) {
+        return replyJson(response, 200, {
+          ...unifiedResult,
+          ...transcriptMeta
+        });
+      }
+      if (geminiRequired) {
+        return replyJson(response, 503, {
+          answer: geminiUnavailableAnswer(unifiedError),
+          ...transcriptMeta,
+          citations: [{ view: "performance", section: "allPostsTable", label: "Creator transcripts" }]
+        });
+      }
+      if (isFullScriptRequest(prompt)) {
+        let scriptResult = null;
+        try {
+          scriptResult = await geminiFullScriptChat(prompt, dashboard, history);
+        } catch {
+          scriptResult = null;
+        }
+        return replyJson(response, 200, {
+          ...(scriptResult && scriptResult.answer
+            ? scriptResult
+            : {
+                answer: chatFullScriptAnswer(prompt, dashboard, dashboard.transcriptContext, history),
+                citations: [
+                  { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+                  dashboard.insights[0]?.citation
+                ].filter(Boolean)
+              }),
+          ...transcriptMeta
+        });
+      }
+      if (shouldForceTranscriptRead(prompt, dashboard)) {
+        let transcriptResult = null;
+        try {
+          transcriptResult = await geminiTranscriptStrategyChat(prompt, dashboard);
+        } catch {
+          transcriptResult = null;
+        }
+        return replyJson(response, 200, {
+          ...(transcriptResult || {
+            answer: transcriptStrategyFallbackAnswer(prompt, dashboard, dashboard.transcriptContext),
+            citations: [{ view: "performance", section: "allPostsTable", label: "Transcript examples" }]
+          }),
+          ...transcriptMeta
+        });
+      }
       if (isMonthlySummaryRequest(prompt)) {
         return replyJson(response, 200, {
           answer: chatMonthlySummaryAnswer(dashboard),
@@ -4442,14 +6317,71 @@ createServer(async (request, response) => {
         });
       }
       if (isNextPostRequest(prompt)) {
+        let nextPostResult = null;
+        try {
+          nextPostResult = await geminiNextPostChat(prompt, dashboard, history);
+        } catch {
+          nextPostResult = null;
+        }
         return replyJson(response, 200, {
-          answer: chatNextPostAnswer(dashboard, dashboard.transcriptContext),
-          ...chatGroundingMeta(dashboard.transcriptContext, { limit: 4 }),
+          ...(nextPostResult && nextPostResult.answer
+            ? nextPostResult
+            : {
+                answer: chatNextPostAnswer(dashboard, dashboard.transcriptContext),
+                citations: [
+                  { view: "performance", section: "allPostsTable", label: "Transcript examples" },
+                  dashboard.insights[0]?.citation,
+                  dashboard.insights[3]?.citation
+                ].filter(Boolean)
+              }),
+          ...chatGroundingMeta(dashboard.transcriptContext, { limit: 4 })
+        });
+      }
+      if (isCompetitorMomentumRequest(prompt, dashboard)) {
+        return replyJson(response, 200, {
+          answer: chatCompetitorMomentumAnswer(prompt, dashboard),
+          ...analyticsMeta,
+          citations: [{ view: "competitors", section: "competitorsTable", label: "Competitor tracker" }]
+        });
+      }
+      if (isAllReelsAnalysisRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatAllReelsAnalysisAnswer(dashboard),
+          ...analyticsMeta,
           citations: [
-            { view: "performance", section: "allPostsTable", label: "Transcript examples" },
-            dashboard.insights[0]?.citation,
-            dashboard.insights[3]?.citation
+            { view: "performance", section: "kpiGrid", label: "Dashboard KPIs" },
+            dashboard.insights[0]?.citation
           ].filter(Boolean)
+        });
+      }
+      if (isAllScriptsAnalysisRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatAllScriptsAuditAnswer(dashboard),
+          ...transcriptMeta,
+          citations: [
+            { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+            { view: "performance", section: "hookChart", label: "Hook performance" }
+          ]
+        });
+      }
+      if (isOutshineStrategyRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatOutshineStrategyAnswer(dashboard),
+          ...transcriptMeta,
+          citations: [
+            { view: "performance", section: "allPostsTable", label: "Creator transcripts" },
+            { view: "competitors", section: "competitorsTable", label: "Competitor references" }
+          ]
+        });
+      }
+      if (isBestReelAnalysisRequest(prompt)) {
+        return replyJson(response, 200, {
+          answer: chatBestReelAnalysisAnswer(dashboard),
+          ...analyticsMeta,
+          citations: [
+            { view: "performance", section: "topPerformers", label: "Top performers" },
+            { view: "performance", section: "allPostsTable", label: "Reel-level breakdown" }
+          ]
         });
       }
       if (isTranscriptStrategyRequest(prompt)) {
@@ -4545,6 +6477,20 @@ createServer(async (request, response) => {
       const current = await readStore();
       const result = await handleLiveNewsImport(body, current);
       return replyJson(response, result.status, result.payload);
+    }
+
+    if (url.pathname === "/api/admin/reels/backfill-thumbnails" && request.method === "POST") {
+      if (!requireAdmin(request, response)) return;
+      const body = parseJson(await collectBody(request), {});
+      const current = await readStore();
+      const result = await runApifyThumbnailBackfill(current, { limit: body.limit });
+      const latest = await readStore();
+      return replyJson(response, 200, {
+        ok: true,
+        backfilled: result.backfilled || 0,
+        candidateIds: result.candidateIds || [],
+        store: publicStore(latest)
+      });
     }
 
     if (url.pathname === "/api/admin/apify/run" && request.method === "POST") {

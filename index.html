@@ -19,7 +19,7 @@
       href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/app.css?v=20260804-thumbfallback1" />
+    <link rel="stylesheet" href="/app.css?v=20260804-business-transcript1" />
   </head>
   <body>
     <div class="aurora" aria-hidden="true">
@@ -91,13 +91,6 @@
             <span id="syncLabel"></span>
           </div>
         </header>
-        <section class="source-strip" id="sourceStrip">
-          <span class="meta-pill" id="reelsSourcePill">Reels</span>
-          <span class="meta-pill" id="newsSourcePill">News</span>
-          <span class="meta-pill" id="transcriptionPill">Transcription</span>
-          <span class="meta-pill" id="aiModePill">AI</span>
-        </section>
-
         <section class="filters panel">
           <div class="filters-grid">
             <label>
@@ -375,6 +368,54 @@
             </div>
             <article class="panel featured-news-panel" id="featuredNewsPanel"></article>
             <div class="news-grid" id="news"></div>
+          </div>
+        </section>
+
+        <section class="view" data-view="businesses">
+          <div class="business-shell">
+            <article class="panel business-table-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Business video lab</p>
+                  <h2>Business ideas breakdown</h2>
+                  <p class="rail-copy">CSV videos ranked by demand signal. Click any thumbnail or title to open the Instagram post.</p>
+                </div>
+                <div class="business-summary-strip" id="businessStats"></div>
+              </div>
+              <div class="business-toolbar">
+                <label>
+                  Search
+                  <input id="businessSearch" placeholder="Search creator, caption, hook..." />
+                </label>
+                <label>
+                  Opportunity
+                  <select id="businessOpportunityFilter"></select>
+                </label>
+                <label>
+                  Sort
+                  <select id="businessSort">
+                    <option value="plays">Most plays</option>
+                    <option value="engagementRate">Best engagement</option>
+                    <option value="duration">Shortest</option>
+                    <option value="publishedAt">Newest</option>
+                  </select>
+                </label>
+                <span class="meta-copy" id="businessCount"></span>
+              </div>
+              <div class="business-table-shell">
+                <div class="business-table-head">
+                  <span>Video</span>
+                  <span>Hook</span>
+                  <span>Opportunity</span>
+                  <span>Plays</span>
+                  <span>Likes</span>
+                  <span>Comments</span>
+                  <span>Eng.</span>
+                  <span>Duration</span>
+                </div>
+                <div class="business-video-grid" id="businessVideos"></div>
+              </div>
+            </article>
           </div>
         </section>
 
@@ -694,6 +735,6 @@
         </div>
       </article>
     </div>
-    <script type="module" src="/app.js?v=20260804-thumbfallback1"></script>
+    <script type="module" src="/app.js?v=20260804-business-transcript1"></script>
   </body>
 </html>

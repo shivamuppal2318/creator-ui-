@@ -33,6 +33,11 @@ const state = {
   comparisonGroup: "hook",
   trendMetric: "views",
   newsCategory: "All",
+  businessExplorer: {
+    search: "",
+    opportunity: "all",
+    sort: "plays",
+  },
   modalScrollPosition: { x: 0, y: 0 },
   userRole: "",
 };
@@ -42,6 +47,7 @@ const navItems = [
   { id: "competitors", label: "Competitor Intel", icon: "↔" },
   { id: "assistant", label: "AI Copilot", icon: "AI" },
   { id: "news", label: "News Radar", icon: "◎" },
+  { id: "businesses", label: "Businesses", icon: "B" },
   { id: "admin", label: "Admin", icon: "⋯" },
 ];
 
@@ -50,6 +56,7 @@ const mobileNavLabels = {
   competitors: "Intel",
   assistant: "AI",
   news: "News",
+  businesses: "Biz",
   admin: "Admin",
 };
 
@@ -71,6 +78,12 @@ const viewChrome = {
     topbarTitle: "The niche, as it happens.",
     heroEyebrow: "News radar · auto-curated for your beat",
     prototype: "Live niche-matched feed",
+  },
+  businesses: {
+    topbarEyebrow: "Business video lab",
+    topbarTitle: "Ideas already winning.",
+    heroEyebrow: "Business videos · keyword scrape",
+    prototype: "CSV imported database",
   },
   assistant: {
     topbarEyebrow: "AI content assistant",
@@ -481,12 +494,16 @@ function initialsForPost(post) {
 
 function postThumbnailMarkup(post, className = "post-thumb") {
   const thumbnailUrl = String(post?.thumbnailUrl || "").trim();
-  const thumbnailSource = post?.id && thumbnailUrl
+  const proxyThumbnailSource = post?.id && thumbnailUrl
     ? `/api/reel-thumbnail?id=${encodeURIComponent(post.id)}&src=${encodeURIComponent(thumbnailUrl)}&v=20260804-thumbfallback1`
     : "";
+  const primaryThumbnailSource = thumbnailUrl || proxyThumbnailSource;
+  const fallbackScript = proxyThumbnailSource
+    ? `if(this.dataset.fallback!=='proxy'){this.dataset.fallback='proxy';this.src='${escapeHtml(proxyThumbnailSource)}';return;}this.hidden=true;this.nextElementSibling.hidden=false;`
+    : "this.hidden=true;this.nextElementSibling.hidden=false;";
   return `<span class="${className} post-thumb-media">
-    ${thumbnailSource ? `<img src="${thumbnailSource}" alt="" loading="lazy" onerror="this.hidden=true; this.nextElementSibling.hidden=false;" />` : ""}
-    <span class="post-thumb-fallback"${thumbnailSource ? " hidden" : ""}>${escapeHtml(initialsForPost(post))}</span>
+    ${primaryThumbnailSource ? `<img src="${escapeHtml(primaryThumbnailSource)}" alt="" loading="lazy" onerror="${fallbackScript}" />` : ""}
+    <span class="post-thumb-fallback"${primaryThumbnailSource ? " hidden" : ""}>${escapeHtml(initialsForPost(post))}</span>
   </span>`;
 }
 
@@ -685,13 +702,22 @@ function normalizeReel(reel = {}) {
     : [];
   const transcript = String(reel.transcript || timestampedTranscript.map((segment) => segment.text).join("\n") || "");
   const pillar = normalizePillarLabel(reel.pillar, "General");
+  const announcementText = [
+    reel.title,
+    reel.caption,
+    transcript,
+    scriptSummary.join(" ")
+  ].filter(Boolean).join(" ").toLowerCase();
+  const hook = /(he.?s back|he’s back|returns as a titan|startup fest|ready to discover|announc|launch|launched|introducing|new update|excited to announce)/.test(announcementText)
+    ? "News / Announcement"
+    : String(reel.hook || "Question");
   return {
     ...reel,
     id: String(reel.id || reel.shortCode || `reel-${Math.random().toString(36).slice(2, 8)}`),
     title: String(reel.title || reel.captionHeadline || reel.caption || "Untitled reel"),
     platform: String(reel.platform || "instagram"),
     pillar,
-    hook: String(reel.hook || "Question"),
+    hook,
     format: String(reel.format || "Short video"),
     postedAt: String(reel.postedAt || reel.timestamp || reel.date || new Date().toISOString()),
     views: Number(reel.views || reel.videoViewCount || reel.videoPlayCount || 0),
@@ -2245,6 +2271,238 @@ function renderHeatmap(cells) {
     .join("");
 }
 
+function businessVideoTitle(video) {
+  return String(video?.title || video?.caption || "Untitled business reel").replace(/\s+/g, " ").trim();
+}
+
+function businessVideoDate(video) {
+  const date = new Date(video?.publishedAt || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function businessThumbnailSource(video) {
+  const source = String(video?.thumbnailUrl || "").trim();
+  const id = String(video?.id || video?.shortcode || source || "business-video").trim();
+  const params = new URLSearchParams({
+    id,
+    title: businessVideoTitle(video),
+    handle: String(video?.username || ""),
+    v: "20260804-business-thumb1",
+  });
+  if (source) params.set("src", source);
+  return `/api/reel-thumbnail?${params.toString()}`;
+}
+
+function filteredBusinessVideos(data) {
+  const videos = Array.isArray(data?.businessVideos?.videos) ? data.businessVideos.videos : [];
+  const query = state.businessExplorer.search.trim().toLowerCase();
+  const opportunity = state.businessExplorer.opportunity;
+  const filtered = videos.filter((video) => {
+    const matchesOpportunity = opportunity === "all" || video.opportunity === opportunity;
+    const haystack = [
+      video.title,
+      video.caption,
+      video.creator,
+      video.username,
+      video.hook,
+      video.opportunity,
+      ...(video.hashtags || [])
+    ].join(" ").toLowerCase();
+    return matchesOpportunity && (!query || haystack.includes(query));
+  });
+  const sortKey = state.businessExplorer.sort;
+  return filtered.sort((left, right) => {
+    if (sortKey === "publishedAt") return new Date(right.publishedAt || 0) - new Date(left.publishedAt || 0);
+    if (sortKey === "duration") return Number(left.duration || 0) - Number(right.duration || 0);
+    return Number(right[sortKey] || 0) - Number(left[sortKey] || 0);
+  });
+}
+
+function renderBusinessVideos(data) {
+  const business = data.businessVideos || { summary: {}, videos: [] };
+  const videos = Array.isArray(business.videos) ? business.videos : [];
+  const visible = filteredBusinessVideos(data);
+  const topVideo = visible[0] || videos[0];
+  const opportunities = ["all", ...new Set(videos.map((video) => video.opportunity).filter(Boolean))];
+  const totalPlays = videos.reduce((sum, video) => sum + Number(video.plays || 0), 0);
+  const totalLikes = videos.reduce((sum, video) => sum + Number(video.likes || 0), 0);
+  const avgEngagement = videos.length
+    ? videos.reduce((sum, video) => sum + Number(video.engagementRate || 0), 0) / videos.length
+    : 0;
+
+  $("#businessStats").innerHTML = [
+    { label: "Videos", value: compactNumber(videos.length || 0) },
+    { label: "Total plays", value: compactNumber(totalPlays) },
+    { label: "Likes", value: compactNumber(totalLikes) },
+    { label: "Avg engagement", value: `${avgEngagement.toFixed(2)}%` },
+  ].map((item) => `<div><small>${escapeHtml(item.label)}</small><strong>${escapeHtml(item.value)}</strong></div>`).join("");
+
+  $("#businessOpportunityFilter").innerHTML = opportunities
+    .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item === "all" ? "All opportunities" : item)}</option>`)
+    .join("");
+  $("#businessOpportunityFilter").value = opportunities.includes(state.businessExplorer.opportunity)
+    ? state.businessExplorer.opportunity
+    : "all";
+  $("#businessSearch").value = state.businessExplorer.search;
+  $("#businessSort").value = state.businessExplorer.sort;
+  $("#businessCount").textContent = `${visible.length} of ${videos.length} videos`;
+
+  const topHashtags = business.summary?.topHashtags || [];
+  const hookCounts = videos.reduce((counts, video) => {
+    const key = video.hook || "Business idea";
+    counts.set(key, (counts.get(key) || 0) + 1);
+    return counts;
+  }, new Map());
+  const signalRows = [
+    { label: "Best format", value: "Short demo reels", copy: "Fast visual proof beats abstract business advice in this scrape." },
+    { label: "Median duration", value: `${Number(business.summary?.medianDuration || 0).toFixed(1)}s`, copy: "Use this as a target length for business idea tests." },
+    { label: "Top hook", value: [...hookCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "Business idea", copy: "Most repeated opening pattern across the imported videos." },
+    { label: "Top hashtag", value: topHashtags[0]?.[0] ? `#${topHashtags[0][0]}` : "#businessideas", copy: "Dominant discovery tag in this CSV." },
+  ];
+  const signalCopy = signalRows.map((row) => `${row.label}: ${row.value}`).join(" · ");
+
+  $("#businessVideos").innerHTML = visible.slice(0, 160)
+    .map((video) => `
+      <article class="business-video-card" role="button" tabindex="0" data-business-video-id="${escapeHtml(video.id)}">
+        <div class="business-video-main" data-label="Video">
+          <button class="business-video-thumb" type="button" data-business-video-open="${escapeHtml(video.id)}">
+            <img src="${escapeHtml(businessThumbnailSource(video))}" alt="" loading="lazy" onerror="this.hidden=true" />
+            <span>${escapeHtml(video.username ? video.username.slice(0, 2).toUpperCase() : "BI")}</span>
+          </button>
+          <div class="business-video-body">
+            <button class="business-video-title-link" type="button" data-business-video-open="${escapeHtml(video.id)}">${escapeHtml(businessVideoTitle(video))}</button>
+            <small>${escapeHtml(businessVideoDate(video))} · @${escapeHtml(video.username || "creator")} · ${escapeHtml(shortText(video.caption || "", "", 96))}</small>
+          </div>
+        </div>
+        <span class="business-pill hook" data-label="Hook">${escapeHtml(video.hook || "Business idea")}</span>
+        <span class="business-pill opportunity" data-label="Opportunity">${escapeHtml(video.opportunity || "business model")}</span>
+        <strong class="business-metric" data-label="Plays">${escapeHtml(compactNumber(video.plays || 0))}</strong>
+        <strong class="business-metric" data-label="Likes">${escapeHtml(compactNumber(video.likes || 0))}</strong>
+        <strong class="business-metric" data-label="Comments">${escapeHtml(compactNumber(video.comments || 0))}</strong>
+        <strong class="business-metric" data-label="Eng.">${escapeHtml(`${Number(video.engagementRate || 0).toFixed(2)}%`)}</strong>
+        <strong class="business-metric" data-label="Duration">${escapeHtml(`${Number(video.duration || 0).toFixed(1)}s`)}</strong>
+      </article>
+    `)
+    .join("") || emptyMarkup("No videos match this filter.");
+  $("#businessCount").title = signalCopy;
+  document.querySelectorAll("[data-business-video-id]").forEach((row) => {
+    row.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openBusinessVideoModal(row.dataset.businessVideoId);
+    };
+    row.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      openBusinessVideoModal(row.dataset.businessVideoId);
+    };
+  });
+  document.querySelectorAll("[data-business-video-open]").forEach((button) => {
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openBusinessVideoModal(button.dataset.businessVideoOpen);
+    };
+  });
+}
+
+function businessCaptionLines(video) {
+  const segments = Array.isArray(video?.timestampedTranscript) ? video.timestampedTranscript : [];
+  if (segments.length) {
+    return segments
+      .map((segment) => ({
+        time: String(segment?.time || `Segment ${segment?.index || ""}`).trim(),
+        text: String(segment?.text || "").replace(/\s+/g, " ").trim()
+      }))
+      .filter((segment) => segment.text)
+      .slice(0, 60);
+  }
+  const caption = String(video?.caption || "").trim();
+  if (!caption) return ["No caption text was included in this CSV export."];
+  return caption
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 14)
+    .map((line, index) => ({ time: `Caption ${String(index + 1).padStart(2, "0")}`, text: line }));
+}
+
+function openBusinessVideoModal(videoId) {
+  preserveModalScrollPosition();
+  state.modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  state.modalReturnTarget = { type: "business", id: videoId };
+  const video = (state.dashboard?.businessVideos?.videos || []).find((item) => String(item.id) === String(videoId));
+  if (!video) return;
+
+  const modal = $("#postDetailModal");
+  const card = modal?.querySelector(".post-detail-card");
+  const timeline = $("#postSceneTimeline");
+  const transcriptLines = businessCaptionLines(video);
+  const hasTranscript = Array.isArray(video.timestampedTranscript) && video.timestampedTranscript.length;
+  $("#postDetailHeader").innerHTML = `
+    <div class="detail-title-row">
+      <span class="post-thumb large">${escapeHtml(video.username ? video.username.slice(0, 2).toUpperCase() : "BI")}</span>
+      <div class="detail-heading-copy">
+        <p class="eyebrow">Business video</p>
+        <h3>${escapeHtml(shortText(businessVideoTitle(video), "Business video", 84))}</h3>
+        <p class="detail-subcopy">@${escapeHtml(video.username || "creator")} • ${escapeHtml(businessVideoDate(video))}</p>
+        <div class="detail-meta-row">
+          <span class="detail-meta-pill">${escapeHtml(video.hook || "Business idea")}</span>
+          <span class="detail-meta-pill soft">${escapeHtml(video.opportunity || "business model")}</span>
+          ${video.postUrl ? `<a class="detail-link" href="${escapeHtml(video.postUrl)}" target="_blank" rel="noreferrer">Open post ↗</a>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+  $("#postDetailStatus").textContent = hasTranscript
+    ? "Transcript loaded from the attached business video transcript import."
+    : "CSV caption and performance metadata loaded for this business video.";
+  $("#analyzeCurrentReel").disabled = true;
+  $("#analyzeCurrentReel").textContent = "CSV only";
+  $("#postSceneTimeline").innerHTML = transcriptLines
+    .map((line, index) => `
+      <article class="timeline-item">
+        <span class="timeline-dot"></span>
+        <div>
+          <strong>${escapeHtml(line.time || `Segment ${String(index + 1).padStart(2, "0")}`)}</strong>
+          <p>${escapeHtml(line.text || "")}</p>
+        </div>
+      </article>
+    `)
+    .join("");
+  $("#postDetailTags").innerHTML = [
+    video.hook,
+    video.opportunity,
+    video.mediaType,
+    ...(video.hashtags || []).slice(0, 5).map((tag) => `#${tag}`)
+  ].filter(Boolean)
+    .map((tag) => `<span class="detail-tag ${strategyTagClass(tag)}"><span class="detail-tag-mark" aria-hidden="true"></span>${escapeHtml(tag)}</span>`)
+    .join("") || `<p class="empty-copy">No tags were included in this CSV export.</p>`;
+  $("#postDetailStats").innerHTML = `
+    <div class="detail-stat"><small>Plays</small><strong>${escapeHtml(compactNumber(video.plays || 0))}</strong></div>
+    <div class="detail-stat"><small>Likes</small><strong>${escapeHtml(compactNumber(video.likes || 0))}</strong></div>
+    <div class="detail-stat"><small>Comments</small><strong>${escapeHtml(compactNumber(video.comments || 0))}</strong></div>
+    <div class="detail-stat"><small>Engagement</small><strong>${escapeHtml(`${Number(video.engagementRate || 0).toFixed(2)}%`)}</strong></div>
+    <div class="detail-stat"><small>Duration</small><strong>${escapeHtml(`${Number(video.duration || 0).toFixed(1)}s`)}</strong></div>
+    <div class="detail-stat"><small>Followers</small><strong>${escapeHtml(compactNumber(video.followers || 0))}</strong></div>
+    <div class="detail-stat"><small>Keyword</small><strong>${escapeHtml(video.keyword || "business ideas")}</strong></div>
+    <div class="detail-stat"><small>Source</small><strong>${escapeHtml(video.username || "csv")}</strong></div>
+  `;
+  const scriptLines = Array.isArray(video.scriptSummary) && video.scriptSummary.length
+    ? video.scriptSummary
+    : transcriptLines.map((line) => line.text).filter(Boolean).slice(0, 8);
+  $("#postDetailScript").innerHTML = scriptLines
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
+    .join("") || `<p class="empty-copy">Transcript or caption is not available for this business video.</p>`;
+
+  if (card) card.scrollTop = 0;
+  if (timeline) timeline.scrollTop = 0;
+  modal.hidden = false;
+  requestAnimationFrame(() => $("#closePostModal")?.focus({ preventScroll: true }));
+  document.body.classList.add("modal-open");
+}
+
 function renderDashboard(data) {
   state.dashboard = data;
   state.filters = {
@@ -2260,10 +2518,14 @@ function renderDashboard(data) {
   $("#heroSubtitle").textContent = data.header.subtitle;
   $("#rangeLabel").textContent = data.header.rangeLabel;
   $("#syncLabel").textContent = data.header.syncLabel;
-  $("#reelsSourcePill").textContent = data.dataSources?.reels?.label || "Reels";
-  $("#newsSourcePill").textContent = data.dataSources?.news?.label || "News";
-  $("#transcriptionPill").textContent = data.dataSources?.transcription?.label || "Transcription";
-  $("#aiModePill").textContent = state.aiMode;
+  const setSourcePill = (selector, value) => {
+    const pill = $(selector);
+    if (pill) pill.textContent = value;
+  };
+  setSourcePill("#reelsSourcePill", data.dataSources?.reels?.label || "Reels");
+  setSourcePill("#newsSourcePill", data.dataSources?.news?.label || "News");
+  setSourcePill("#transcriptionPill", data.dataSources?.transcription?.label || "Transcription");
+  setSourcePill("#aiModePill", state.aiMode);
   const oldestPost = data.posts?.[data.posts.length - 1];
   const newestPost = data.posts?.[0];
   $("#summaryStats").textContent = `${oldestPost?.postedAtLabel || ""} – ${newestPost?.postedAtLabel || ""} · ${data.summary.posts} reels`;
@@ -2289,7 +2551,19 @@ function renderDashboard(data) {
   $("#assistantNewsCount").textContent = String(data.news?.length || 0);
 
   const performanceKpis = derivedPerformanceKpis(data);
-  $("#kpiGrid").innerHTML = performanceKpis
+  const creatorFollowersLabel = data.creator?.followersLabel || compactNumber(data.creator?.followers || 0);
+  const creatorFollowersKpi = creatorFollowersLabel && creatorFollowersLabel !== "0"
+    ? [{
+        label: "Followers",
+        value: creatorFollowersLabel,
+        delta: data.creator?.followersSource || "public profile",
+        sparkKey: "views",
+        size: "mini",
+        tone: "violet",
+        noSparkline: true
+      }]
+    : [];
+  $("#kpiGrid").innerHTML = [...performanceKpis, ...creatorFollowersKpi]
     .map(
       (item) => `
         <article class="kpi-card reference-kpi ${item.size} ${item.tone}">
@@ -2298,7 +2572,7 @@ function renderDashboard(data) {
           </div>
           <strong>${escapeHtml(item.value)}</strong>
           <small class="${item.delta.startsWith("+") ? "up" : "down"}">${escapeHtml(item.delta)}</small>
-          ${miniSparkline(data.charts.trend || [], item.sparkKey, item.tone === "violet" ? "#b7a7dc" : "#95aad0")}
+          ${item.noSparkline ? "" : miniSparkline(data.charts.trend || [], item.sparkKey, item.tone === "violet" ? "#b7a7dc" : "#95aad0")}
         </article>
       `,
     )
@@ -2570,6 +2844,7 @@ function renderDashboard(data) {
   renderBars("#pillarBars", data.charts.pillars, "avgViews", "linear-gradient(135deg,#ba8a27,#d0a44a)");
   renderHookReference(data.charts.hooks);
   renderHeatmap(data.charts.heatmap);
+  renderBusinessVideos(data);
   renderPostExplorer();
   renderFilters();
   renderMessages();
@@ -2664,13 +2939,21 @@ async function sendMessage(prompt, options = {}) {
   renderMessages();
 
   try {
+    const history = state.messages
+      .filter((message) => message?.tone !== "thinking")
+      .slice(-8)
+      .map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        text: String(message.text || "")
+      }));
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prompt: text,
         filters: state.filters,
-        storyContext
+        storyContext,
+        history
       }),
     });
     const result = await response.json();
@@ -3206,6 +3489,17 @@ $(".mini-apply").addEventListener("click", async () => {
   $( `#${id}` ).addEventListener(id === "postSearch" ? "input" : "change", (event) => {
     state.postExplorer[key] = event.target.value;
     renderPostExplorer();
+  });
+});
+
+[
+  ["businessSearch", "search", "input"],
+  ["businessOpportunityFilter", "opportunity", "change"],
+  ["businessSort", "sort", "change"],
+].forEach(([id, key, eventName]) => {
+  $(`#${id}`).addEventListener(eventName, (event) => {
+    state.businessExplorer[key] = event.target.value;
+    if (state.dashboard) renderBusinessVideos(state.dashboard);
   });
 });
 
